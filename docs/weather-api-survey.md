@@ -81,3 +81,19 @@ GET .../search?name=朝阳区 ...
 - Key 存注册表 `HKCU\Software\MiniWeather\ApiKey`（和城市列表同处）；
 - 有 Key 走和风，没有 Key 自动回退 Open-Meteo —— 保持"开箱即用、不填 Key 也能跑"的体验；
 - 和风的 WMO 与国内天气现象编码不同，`wmo_text()` 需要加一张映射表。
+
+## 五、落地结果（2026-10-21 已接入和风）
+
+按上面的结论接入了和风，代码在 `src/qweather.c`，Open-Meteo 保留为无 Key 时的自动回退。
+
+- **鉴权**：请求头 `X-QW-Api-Key`；域名必须是账号专属 API Host。
+  `devapi.qweather.com` 与 `api.qweather.com` 现在都会返回 `403 Invalid Host`（实测）。
+- **端点**：`/v7/weather/now`、`/24h`、`/7d`、`/geo/v2/city/lookup`。
+  实测「西湖区」→ `name=西湖, adm2=杭州`，区县级可用。
+- **字段特点**：所有数值都是字符串；图标码是自有体系（100 晴 / 150 夜间晴 / 3xx 雨 / 4xx 雪 / 5xx 雾霾），
+  已在 `qw_icon_to_wmo()` 里映射到内部 WMO 码，UI 的自绘图标直接复用。
+- **最大的坑（gzip）**：和风**无视** `Accept-Encoding: identity`，永远返回 gzip；
+  而 WinHTTP 的 `WINHTTP_OPTION_DECOMPRESSION` 在"未压缩响应"上会直接 abort
+  （表现为 Open-Meteo 那条链路报 `读取数据失败（2147500036）` = `E_ABORT`）。
+  最终自己实现了 gzip/deflate 解压（`src/gunzip.c`，约 300 行，RFC 1951/1952），
+  请求时仍然优先声明 `identity`，只有服务端强行压缩时才本地解，两条链路互不影响。

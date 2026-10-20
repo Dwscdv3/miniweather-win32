@@ -12,16 +12,17 @@
 
 | 指标 | 实测 |
 | --- | --- |
-| 可执行文件 | 223 KB（静态链接 CRT） |
-| 私有内存 | ~7.6 MB |
+| 可执行文件 | 234 KB（静态链接 CRT） |
+| 私有内存 | ~7.7 MB |
 | 工作集合 | ~23 MB（其中大部分是 winhttp / crypt32 等系统 DLL 的共享页） |
-| 句柄 | ~320 |
+| 句柄 | ~326 |
 | 线程 | 1 个自建后台线程 + WinHTTP 内部线程 |
-| 第三方依赖 | 无（只用系统自带的 winhttp / gdi32 / user32 / advapi32） |
+| 第三方依赖 | 无（只用系统自带的 winhttp / gdi32 / user32 / advapi32 / shell32） |
 | 空闲 CPU | 0%（定时器 10 分钟一次刷新） |
 
 ## 功能
 
+- **数据源可切换**：配好和风天气（QWeather）就用和风（中国区 3–5 km、支持区县），没配置则自动用 Open-Meteo
 - 顶部常用城市标签栏，最多 5 个城市，点击切换、**拖拽排序**、悬停出 `×` 删除，`+` 号搜索新城市
 - 右上角刷新按钮，配合自动刷新（每 10 分钟）
 - 当前温度、天气现象、体感温度、当日最高/最低
@@ -59,6 +60,9 @@ build.bat test
 编译 `tests/test_json.c`，用 `tests/sample.json`（真实 API 响应留档）跑一遍解析自检，
 覆盖：字段提取、数组对齐、缺失键、越界索引、残缺/非法输入、`\uXXXX` 与代理对。
 
+再跑 `tests/test_gunzip.c`，用 `tests/qweather_24h.gz`（和风真实 gzip 响应）验证自写的
+inflate：解压正确性、解压后可解析、截断数据被拒绝。
+
 `tools/` 下是开发辅助程序（不参与打包）：
 
 - `shot.c` —— 把运行中的窗口截成原始位图，配合 `tools/raw2png.py` 生成 PNG（文档截图用）
@@ -75,37 +79,61 @@ build\uitest.exe hoverreal 46 29
 ## 目录结构
 
 ```
-src/app.h     共享类型、主题配色、全局状态、注册表接口
-src/main.c    窗口、消息循环、常用城市管理、后台任务调度
+src/app.h     共享类型、主题配色、全局状态、接口声明
+src/main.c    窗口、消息循环、常用城市管理、后台任务调度、命令行参数
 src/ui.c      全部界面绘制与标签栏布局（GDI，双缓冲）
-src/api.c     Open-Meteo 请求构造与解析、WMO 天气码中文文案
-src/net.c     WinHTTP 同步 GET 封装
+src/api.c     数据源分发、Open-Meteo 请求与解析、WMO 天气码中文文案
+src/qweather.c 和风天气接入（GeoAPI / now / 24h / 7d）
+src/net.c     WinHTTP 封装（含 gzip 响应自动解码）
+src/gunzip.c  自写的 gzip/deflate 解压（无第三方依赖）
 src/json.c    极简 JSON 解析器（直接解码为 UTF-16）
-src/store.c   常用城市持久化（注册表）与旧配置迁移
-src/util.c    UTF-8 转换、字符串工具
-tests/        JSON 自检用例 + 真实响应样本
+src/store.c   常用城市与 API 配置的注册表读写、旧配置迁移
+src/util.c    UTF-8 转换、日期与字符串工具
+tests/        JSON / gzip 自检用例 + 真实响应样本
 tools/        截图与交互测试小工具
 ```
 
 ## 数据与隐私
 
-天气与地理编码均来自 [Open-Meteo](https://open-meteo.com/)，免费且无需 API Key。
-客户端只发送经纬度坐标（或你输入的城市名），不发送任何设备标识。
+默认走 [Open-Meteo](https://open-meteo.com/)：免注册、免 Key、非商用免费，但地理编码只到地级市。
+配上和风天气后自动切换，中国区精度与区县覆盖都更好（详见
+[docs/weather-api-survey.md](docs/weather-api-survey.md)）。
 
-> 想换成中国区更准的数据源？见 [docs/weather-api-survey.md](docs/weather-api-survey.md)：
-> 对比了和风、高德、心知、彩云，结论是**和风天气免费订阅**最合适（区县级覆盖、逐小时、7/15 天、预警）。
-> 当前用的是 Open-Meteo，地理编码只到地级市。
+### 启用和风天气
 
-常用城市列表与当前选中项保存在注册表：
+在和风控制台拿到 **API Host**（形如 `xxxxx.re.qweatherapi.com`）和 **API Key**，然后：
+
+```bat
+build\weather.exe --host xxxxx.re.qweatherapi.com --key 你的Key
+```
+
+参数会写入注册表后立即生效，之后直接双击 `weather.exe` 即可。清除配置回到 Open-Meteo：
+
+```bat
+build\weather.exe --reset-api
+```
+
+配置保存在注册表（与城市列表同处）：
 
 ```
 HKEY_CURRENT_USER\Software\MiniWeather
-  Cities = REG_MULTI_SZ  '北京|39.9042|116.4074' '杭州|30.2936|120.1614' ...
+  Cities = REG_MULTI_SZ  '北京|39.9042|116.4074' ...
   Active = REG_SZ        '北京'
+  QwHost = REG_SZ        'xxxxx.re.qweatherapi.com'
+  QwKey  = REG_SZ        '...'
 ```
 
 首次运行若检测到旧版的 `%APPDATA%\MiniWeather\config.txt`，会自动迁移成一条城市记录。
-删掉这个注册表键即恢复默认（北京）。
+清空这个注册表键即恢复默认（北京 + Open-Meteo）。
+
+> Key 以明文存在 HKCU 下（仅当前用户可读）。若这台机器多人共用，建议先用
+> `--reset-api` 清掉，或改用系统凭据管理器保管。注意：Key 一旦出现在截图/聊天记录里，
+> 最稳妥的做法是去控制台轮换一次。
+
+客户端只发送经纬度（或你输入的城市名），不发送任何设备标识。
+
+> 想换成中国区更准的数据源？见 [docs/weather-api-survey.md](docs/weather-api-survey.md)：
+> 对比了和风、高德、心知、彩云，结论是**和风天气免费订阅**最合适（区县级覆盖、逐小时、7/15 天、预警）。
 
 ## 已知限制
 
