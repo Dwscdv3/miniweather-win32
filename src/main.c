@@ -4,12 +4,14 @@
 #include "ui.h"
 
 #include <windowsx.h>
+#include <shellapi.h>
 #include <math.h>
 #include <stdio.h>
 
 #define MZ(x) MulDiv((x), g_dpi, 96)
 
 AppState g_app;
+ApiConfig g_api;
 int      g_dpi = 96;
 
 static HWND    g_hwnd;
@@ -27,6 +29,44 @@ static struct {
 } g_press;
 
 /* ---------------- 常用城市 ---------------- */
+
+/* --host / --key 写入注册表后立即生效；带 --reset-api 则清除并回退 Open-Meteo */
+static void api_args(void)
+{
+    wchar_t host[128] = L"";
+    wchar_t key[64]   = L"";
+    int changed = 0;
+
+    api_load(host, 128, key, 64);
+
+    int argc = 0;
+    LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv) {
+        for (int i = 1; i < argc; i++) {
+            if (!wcscmp(argv[i], L"--host") && i + 1 < argc) {
+                wcsncpy(host, argv[++i], 127);
+                host[127] = 0;
+                changed = 1;
+            } else if (!wcscmp(argv[i], L"--key") && i + 1 < argc) {
+                wcsncpy(key, argv[++i], 63);
+                key[63] = 0;
+                changed = 1;
+            } else if (!wcscmp(argv[i], L"--reset-api")) {
+                host[0] = 0;
+                key[0]  = 0;
+                changed = 1;
+            }
+        }
+        LocalFree(argv);
+    }
+
+    if (changed) {
+        trim_w(host);
+        trim_w(key);
+        api_save(host, key);
+    }
+    api_load(g_api.host, 128, g_api.key, 64);
+}
 
 static void save_store(void)
 {
@@ -666,6 +706,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, LPWSTR cmdline, int show)
     }
     if (g_dpi <= 0) g_dpi = 96;
 
+    api_args();
     cities_init();
     g_app.hover_tab   = -1;      /* 0 是合法标签下标，必须显式初始化 */
     g_app.hover_close = -1;

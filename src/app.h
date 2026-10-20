@@ -46,6 +46,7 @@ typedef struct {
 typedef struct {
     wchar_t city[96];
     wchar_t updated[24];
+    wchar_t desc[24];               /* 天气现象文案（和风直接给中文） */
     double  lat, lon;
     double  temp, feels, wind, pressure, precip;
     int     humidity, code, is_day, wind_dir;
@@ -53,6 +54,7 @@ typedef struct {
     int     hcount;
     double  htemp[HOURS_MAX];
     int     hpop[HOURS_MAX];
+    int     hhour[HOURS_MAX];       /* 每个点对应的本地小时 */
     int     dcount;
     DayForecast days[DAYS_MAX];
 } Weather;
@@ -91,7 +93,17 @@ typedef struct {
 extern AppState g_app;
 extern int      g_dpi;
 
+/* 数据源配置（和风天气）：从注册表读取，未配置则回退 Open-Meteo */
+typedef struct {
+    wchar_t host[128];              /* 形如 xxxxx.re.qweatherapi.com */
+    wchar_t key[64];
+} ApiConfig;
+
+extern ApiConfig g_api;
+
 /* net.c */
+char *http_get_ex(const wchar_t *url, const wchar_t *extra_headers,
+                  size_t *out_len, wchar_t *err, int errcap);
 char *http_get(const wchar_t *url, size_t *out_len, wchar_t *err, int errcap);
 void  http_free(char *p);
 
@@ -101,15 +113,27 @@ void           weather_free(Weather *w);
 const wchar_t *wmo_text(int code);
 const wchar_t *wind_dir_text(int deg);
 
+/* qweather.c */
+int      qweather_ready(void);
+Weather *qweather_fetch(const Job *job, wchar_t *err, int errcap);
+
+/* gunzip.c */
+unsigned char *gz_decompress(const unsigned char *in, size_t n, size_t *outlen);
+
 /* util.c */
 wchar_t *u8_to_w(const char *s, int n);
 char    *w_to_u8(const wchar_t *s);
 void     trim_w(wchar_t *s);
 void     city_short(const wchar_t *full, wchar_t *out, int cap);
+int      time_hour(const wchar_t *iso);
+void     weekday_text(const wchar_t *date, wchar_t *out, int cap);
+void     date_label(const wchar_t *date, wchar_t *out, int cap);
 
-/* store.c —— 常用城市持久化（注册表 HKCU\Software\MiniWeather） */
+/* store.c —— 常用城市与数据源配置（HKCU\Software\MiniWeather） */
 int  store_load(City *cities, int max, int *count, wchar_t *active, int cap);
 void store_save(const City *cities, int count, const wchar_t *active);
 int  legacy_load(wchar_t *city, int cap, double *lat, double *lon);
+void api_load(wchar_t *host, int hcap, wchar_t *key, int kcap);
+void api_save(const wchar_t *host, const wchar_t *key);
 
 #endif

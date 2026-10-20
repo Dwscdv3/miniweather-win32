@@ -69,40 +69,6 @@ const wchar_t *wind_dir_text(int deg)
     return D[idx];
 }
 
-static int hour_of(const wchar_t *t)
-{
-    if (!t) return 0;
-    size_t n = wcslen(t);
-    if (n >= 13 && t[10] == L'T') return _wtoi(t + 11);
-    return 0;
-}
-
-/* 日期 -> 周几（0 = 周日），Sakamoto 算法 */
-static void weekday_of(const wchar_t *date, wchar_t *out, int cap)
-{
-    int y = 0, m = 0, d = 0;
-    static const wchar_t *N[7] = { L"周日", L"周一", L"周二", L"周三", L"周四", L"周五", L"周六" };
-    static const int T[12] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
-
-    if (swscanf(date, L"%d-%d-%d", &y, &m, &d) != 3 || m < 1 || m > 12) {
-        swprintf(out, (size_t)cap, L"");
-        return;
-    }
-    int yy = y - (m < 3 ? 1 : 0);
-    int idx = (yy + yy / 4 - yy / 100 + yy / 400 + T[m - 1] + d) % 7;
-    if (idx < 0) idx += 7;
-    swprintf(out, (size_t)cap, L"%s", N[idx]);
-}
-
-static void date_label(const wchar_t *date, wchar_t *out, int cap)
-{
-    int y = 0, m = 0, d = 0;
-    if (swscanf(date, L"%d-%d-%d", &y, &m, &d) == 3)
-        swprintf(out, (size_t)cap, L"%d/%d", m, d);
-    else
-        swprintf(out, (size_t)cap, L"");
-}
-
 static int geocode(const wchar_t *q, double *lat, double *lon,
                    wchar_t *city, int cap, wchar_t *err, int errcap)
 {
@@ -159,7 +125,7 @@ static int geocode(const wchar_t *q, double *lat, double *lon,
     return 1;
 }
 
-Weather *weather_fetch(const Job *job, wchar_t *err, int errcap)
+static Weather *openmeteo_fetch(const Job *job, wchar_t *err, int errcap)
 {
     double lat = job->lat, lon = job->lon;
     wchar_t city[96];
@@ -200,11 +166,13 @@ Weather *weather_fetch(const Job *job, wchar_t *err, int errcap)
     w->precip   = json_num(json_obj(cur, L"precipitation"), 0);
 
     const wchar_t *now = json_str(json_obj(cur, L"time"), L"");
-    int curhour = hour_of(now);
+    int curhour = time_hour(now);
     if (wcslen(now) >= 16)
         swprintf(w->updated, 24, L"%s", now + 11);
     else
         swprintf(w->updated, 24, L"--:--");
+
+    wcsncpy(w->desc, wmo_text(w->code), 23);
 
     /* 逐小时：从当前小时开始取 24 条 */
     JNode *hl    = json_obj(root, L"hourly");
@@ -215,13 +183,14 @@ Weather *weather_fetch(const Job *job, wchar_t *err, int errcap)
 
     int start = 0;
     for (int i = 0; i < hn; i++) {
-        if (hour_of(json_str(json_at(htime, i), L"")) == curhour) { start = i; break; }
+        if (time_hour(json_str(json_at(htime, i), L"")) == curhour) { start = i; break; }
     }
 
     int c = 0;
     for (int i = start; i < hn && c < HOURS_MAX; i++, c++) {
         w->htemp[c] = json_num(json_at(htemp, i), 0);
         w->hpop[c]  = (int)json_num(json_at(hpop, i), 0);
+        w->hhour[c] = time_hour(json_str(json_at(htime, i), L""));
     }
     w->hcount = c;
     w->hstart = curhour;
@@ -237,7 +206,7 @@ Weather *weather_fetch(const Job *job, wchar_t *err, int errcap)
     for (int i = 0; i < dn && i < DAYS_MAX; i++) {
         const wchar_t *ds = json_str(json_at(dtime, i), L"");
         DayForecast *d = &w->days[i];
-        weekday_of(ds, d->weekday, 12);
+        weekday_text(ds, d->weekday, 12);
         date_label(ds, d->date, 12);
         d->code = (int)json_num(json_at(dcode, i), 0);
         d->tmax = json_num(json_at(dmax, i), 0);
@@ -247,6 +216,13 @@ Weather *weather_fetch(const Job *job, wchar_t *err, int errcap)
 
     json_free(root);
     return w;
+}
+
+/* 统一入口：配好和风的 Host + Key 就走和风（中国区更准、支持区县），否则回退 Open-Meteo */
+Weather *weather_fetch(const Job *job, wchar_t *err, int errcap)
+{
+    if (qweather_ready()) return qweather_fetch(job, err, errcap);
+    return openmeteo_fetch(job, err, errcap);
 }
 
 void weather_free(Weather *w)

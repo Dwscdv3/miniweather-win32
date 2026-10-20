@@ -10,6 +10,65 @@
 #define REG_PATH   L"Software\\MiniWeather"
 #define REG_CITIES L"Cities"
 #define REG_ACTIVE L"Active"
+#define REG_QW_HOST L"QwHost"
+#define REG_QW_KEY  L"QwKey"
+
+void api_load(wchar_t *host, int hcap, wchar_t *key, int kcap)
+{
+    if (host && hcap > 0) host[0] = 0;
+    if (key && kcap > 0) key[0] = 0;
+
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_PATH, 0, KEY_READ, &k) != ERROR_SUCCESS) return;
+
+    DWORD type = 0, sz = 0;
+
+    if (host && hcap > 0) {
+        sz = (DWORD)((size_t)hcap * sizeof(wchar_t));
+        if (RegQueryValueExW(k, REG_QW_HOST, NULL, &type, (BYTE *)host, &sz) == ERROR_SUCCESS &&
+            type == REG_SZ) {
+            host[hcap - 1] = 0;
+            trim_w(host);
+        } else {
+            host[0] = 0;
+        }
+    }
+
+    if (key && kcap > 0) {
+        sz = (DWORD)((size_t)kcap * sizeof(wchar_t));
+        if (RegQueryValueExW(k, REG_QW_KEY, NULL, &type, (BYTE *)key, &sz) == ERROR_SUCCESS &&
+            type == REG_SZ) {
+            key[kcap - 1] = 0;
+            trim_w(key);
+        } else {
+            key[0] = 0;
+        }
+    }
+
+    RegCloseKey(k);
+}
+
+void api_save(const wchar_t *host, const wchar_t *key)
+{
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, REG_PATH, 0, NULL, 0,
+                        KEY_WRITE, NULL, &k, NULL) != ERROR_SUCCESS)
+        return;
+
+    if (host && host[0])
+        RegSetValueExW(k, REG_QW_HOST, 0, REG_SZ, (const BYTE *)host,
+                       (DWORD)((wcslen(host) + 1) * sizeof(wchar_t)));
+    else
+        RegDeleteValueW(k, REG_QW_HOST);
+
+    if (key && key[0])
+        RegSetValueExW(k, REG_QW_KEY, 0, REG_SZ, (const BYTE *)key,
+                       (DWORD)((wcslen(key) + 1) * sizeof(wchar_t)));
+    else
+        RegDeleteValueW(k, REG_QW_KEY);
+
+    RegCloseKey(k);
+}
 
 int store_load(City *cities, int max, int *count, wchar_t *active, int cap)
 {

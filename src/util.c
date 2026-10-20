@@ -56,3 +56,39 @@ void city_short(const wchar_t *full, wchar_t *out, int cap)
     memcpy(out, full, n * sizeof(wchar_t));
     out[n] = 0;
 }
+
+/* "2026-10-21T02:00+08:00" -> 2（取不到就返回 0） */
+int time_hour(const wchar_t *iso)
+{
+    if (!iso) return 0;
+    if (wcslen(iso) >= 13 && iso[10] == L'T') return _wtoi(iso + 11);
+    return 0;
+}
+
+/* 日期 -> 周几（0 = 周日），Sakamoto 算法 */
+void weekday_text(const wchar_t *date, wchar_t *out, int cap)
+{
+    int y = 0, m = 0, d = 0;
+    static const wchar_t *N[7] = { L"周日", L"周一", L"周二", L"周三", L"周四", L"周五", L"周六" };
+    static const int T[12] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
+
+    if (!out || cap <= 0) return;
+    if (!date || swscanf(date, L"%d-%d-%d", &y, &m, &d) != 3 || m < 1 || m > 12) {
+        swprintf(out, (size_t)cap, L"");
+        return;
+    }
+    int yy = y - (m < 3 ? 1 : 0);
+    int idx = (yy + yy / 4 - yy / 100 + yy / 400 + T[m - 1] + d) % 7;
+    if (idx < 0) idx += 7;
+    swprintf(out, (size_t)cap, L"%s", N[idx]);
+}
+
+void date_label(const wchar_t *date, wchar_t *out, int cap)
+{
+    int y = 0, m = 0, d = 0;
+    if (!out || cap <= 0) return;
+    if (date && swscanf(date, L"%d-%d-%d", &y, &m, &d) == 3)
+        swprintf(out, (size_t)cap, L"%d/%d", m, d);
+    else
+        swprintf(out, (size_t)cap, L"");
+}

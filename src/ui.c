@@ -495,7 +495,7 @@ static void draw_hourly(HDC dc, RECT r)
         fill_circle(dc, pts[i].x, pts[i].y, SZ(2), C_ACCENT);
 
         wchar_t h[16];
-        swprintf(h, 16, L"%d时", (w->hstart + i) % 24);
+        swprintf(h, 16, L"%d时", w->hhour[i]);
         /* 始终以刻度点为中心，允许文字伸进卡片内边距，避免首尾标签被推歪 */
         RECT tr;
         tr.left   = pts[i].x - SZ(20);
@@ -742,7 +742,7 @@ void ui_paint(HDC target, int cw, int ch)
     RECT rc;
     rc.left = x; rc.right = x + w - iconw;
     rc.top = y + SZ(72); rc.bottom = y + SZ(72) + SZ(22);
-    text(dc, wmo_text(wd->code), rc, f_cond, C_TEXT,
+    text(dc, wd->desc[0] ? wd->desc : wmo_text(wd->code), rc, f_cond, C_TEXT,
          DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     RECT rf;
@@ -827,8 +827,8 @@ void ui_paint(HDC target, int cw, int ch)
         text(dc, g_app.error, ft, f_tiny, C_ERR,
              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     else
-        text(dc, L"数据来源 Open-Meteo", ft, f_tiny, C_MUTED,
-             DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        text(dc, qweather_ready() ? L"数据来源 和风天气" : L"数据来源 Open-Meteo",
+             ft, f_tiny, C_MUTED, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     BitBlt(target, 0, 0, cw, ch, dc, 0, 0, SRCCOPY);
 }

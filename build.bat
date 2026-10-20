@@ -39,8 +39,8 @@ if /I "%1"=="shot" (
   exit /b 0
 )
 
-cl %CFLAGS% /Fo:build\ /Fe:build\weather.exe src\main.c src\ui.c src\api.c src\net.c src\json.c src\util.c src\store.c ^
-   /link /SUBSYSTEM:WINDOWS winhttp.lib gdi32.lib user32.lib advapi32.lib
+cl %CFLAGS% /Fo:build\ /Fe:build\weather.exe src\main.c src\ui.c src\api.c src\qweather.c src\gunzip.c src\net.c src\json.c src\util.c src\store.c ^
+   /link /SUBSYSTEM:WINDOWS winhttp.lib gdi32.lib user32.lib advapi32.lib shell32.lib
 if errorlevel 1 exit /b 1
 echo [build] ok - build\weather.exe
 
@@ -48,6 +48,11 @@ if /I "%1"=="test" (
   cl %CFLAGS% /Fo:build\testobj\ /Fe:build\test_json.exe tests\test_json.c src\json.c
   if errorlevel 1 exit /b 1
   build\test_json.exe tests\sample.json
+  if errorlevel 1 exit /b 1
+
+  cl %CFLAGS% /Fo:build\testobj\ /Fe:build\test_gunzip.exe tests\test_gunzip.c src\gunzip.c src\json.c
+  if errorlevel 1 exit /b 1
+  build\test_gunzip.exe tests\qweather_24h.gz
   if errorlevel 1 exit /b 1
 )
 

@@ -20,7 +20,8 @@ static void seterr(wchar_t *err, int cap, const wchar_t *fmt, ...)
     va_end(ap);
 }
 
-char *http_get(const wchar_t *url, size_t *out_len, wchar_t *err, int errcap)
+char *http_get_ex(const wchar_t *url, const wchar_t *extra_headers,
+                  size_t *out_len, wchar_t *err, int errcap)
 {
     HINTERNET hs = NULL, hc = NULL, hr = NULL;
     char *body = NULL;
@@ -72,9 +73,13 @@ char *http_get(const wchar_t *url, size_t *out_len, wchar_t *err, int errcap)
                             WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!hr) { seterr(err, errcap, L"创建请求失败（%lu）", GetLastError()); goto done; }
 
+    /* 首选不压缩；和风会无视 identity 强制 gzip，由 WinHTTP 自动解压兜底
+     * （注意：Open-Meteo 的 deflate 响应在 WinHTTP 解压路径上会报 E_ABORT） */
     WinHttpAddRequestHeaders(hr,
         L"Accept: application/json\r\nAccept-Encoding: identity\r\n",
         (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD);
+    if (extra_headers && extra_headers[0])
+        WinHttpAddRequestHeaders(hr, extra_headers, (DWORD)-1, WINHTTP_ADDREQ_FLAG_ADD);
 
     if (!WinHttpSendRequest(hr, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                             WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
@@ -125,6 +130,25 @@ char *http_get(const wchar_t *url, size_t *out_len, wchar_t *err, int errcap)
         if (!body) { seterr(err, errcap, L"内存不足"); goto done; }
         cap = 1;
     }
+
+    /* 服务端强制压缩时本地解压（和风天气会忽略 identity） */
+    if (len > 4 && ((unsigned char)body[0] == 0x1f || (unsigned char)body[0] == 0x78)) {
+        size_t dn = 0;
+        unsigned char *d = gz_decompress((const unsigned char *)body, len, &dn);
+        if (d) {
+            char *nb = (char *)malloc(dn + 1);
+            if (nb) {
+                memcpy(nb, d, dn);
+                nb[dn] = 0;
+                free(body);
+                body = nb;
+                len  = dn;
+                cap  = dn + 1;
+            }
+            free(d);
+        }
+    }
+
     body[len] = 0;
     if (out_len) *out_len = len;
 
@@ -143,4 +167,9 @@ done:
 void http_free(char *p)
 {
     free(p);
+}
+
+char *http_get(const wchar_t *url, size_t *out_len, wchar_t *err, int errcap)
+{
+    return http_get_ex(url, NULL, out_len, err, errcap);
 }
