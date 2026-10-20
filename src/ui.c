@@ -102,6 +102,42 @@ static void text(HDC dc, const wchar_t *s, RECT r, HFONT f, COLORREF c, UINT fmt
     SelectObject(dc, of);
 }
 
+/* 按字符折行（GDI 的 DT_WORDBREAK 对没有空格的中文不可靠） */
+static void text_wrap(HDC dc, const wchar_t *s, RECT r, HFONT f, COLORREF c, int max_lines)
+{
+    if (!s || !s[0]) return;
+
+    int maxw = r.right - r.left;
+    int lineh = SZ(17);
+    const wchar_t *p = s;
+    int y = r.top;
+
+    for (int line = 0; line < max_lines && *p; line++) {
+        wchar_t tmp[128];
+        int take = 0;
+
+        while (p[take] && take < 127) {
+            int n = take + 1;
+            memcpy(tmp, p, (size_t)n * sizeof(wchar_t));
+            tmp[n] = 0;
+            if (text_w(f, tmp) > maxw) break;
+            take = n;
+        }
+        if (take == 0) take = 1;
+
+        memcpy(tmp, p, (size_t)take * sizeof(wchar_t));
+        tmp[take] = 0;
+
+        RECT lr;
+        lr.left = r.left; lr.right = r.right;
+        lr.top = y; lr.bottom = y + lineh;
+        text(dc, tmp, lr, f, c, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+
+        p += take;
+        y += lineh;
+    }
+}
+
 static void fill_rr(HDC dc, RECT r, int rad, COLORREF c)
 {
     if (r.right <= r.left || r.bottom <= r.top) return;
@@ -612,6 +648,18 @@ static void draw_stat(HDC dc, RECT r, const wchar_t *label, const wchar_t *value
     text(dc, value, vr, f_pill, vcol, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
+/* 蒲福风级（中国大陆通用 0~17 级），输入 km/h */
+static int wind_scale(double kmh)
+{
+    static const int LB[17] = {
+        1, 6, 12, 20, 29, 39, 50, 62, 75, 89, 103, 118, 134, 150, 167, 184, 202
+    };
+    int lv = 0;
+    for (int i = 0; i < 17; i++)
+        if (kmh >= LB[i]) lv = i + 1;
+    return lv;
+}
+
 /* 次要数据小卡片：更矮、字号更小，视觉上明显次于上面那排 */
 static void draw_mini(HDC dc, RECT r, const wchar_t *label, const wchar_t *value)
 {
@@ -784,6 +832,23 @@ void ui_paint(HDC target, int cw, int ch)
     swprintf(buf, 96, L"%.0f°", wd->temp);
     text(dc, buf, rt, f_big, C_TEXT, DT_LEFT | DT_TOP | DT_SINGLELINE);
 
+    /* 降水描述：放在大号温度右侧的留白里，长文本自动换行 */
+    if (wd->minutely[0]) {
+        SIZE tsz;
+        tsz.cx = 0;
+        HGDIOBJ of = SelectObject(dc, f_big);
+        GetTextExtentPoint32W(dc, buf, (int)wcslen(buf), &tsz);
+        SelectObject(dc, of);
+
+        RECT mr;
+        mr.left   = x + tsz.cx + SZ(16);
+        mr.right  = x + w - iconw - SZ(6);
+        mr.top    = y + SZ(14);
+        mr.bottom = y + SZ(74);
+        if (mr.right - mr.left > SZ(72))
+            text_wrap(dc, wd->minutely, mr, f_small, C_MUTED, 3);
+    }
+
     RECT rc;
     rc.left = x; rc.right = x + w - iconw;
     rc.top = y + SZ(72); rc.bottom = y + SZ(72) + SZ(22);
@@ -824,7 +889,7 @@ void ui_paint(HDC target, int cw, int ch)
             swprintf(val, 32, L"%d%%", wd->humidity);
         } else if (i == 1) {
             swprintf(lbl, 32, L"风速 · %s", wind_dir_text(wd->wind_dir));
-            swprintf(val, 32, L"%.0f km/h", wd->wind);
+            swprintf(val, 32, L"%d级 · %.0f km/h", wind_scale(wd->wind), wd->wind);
         } else if (wd->has_aqi) {
             wcscpy(lbl, L"空气质量");
             swprintf(val, 32, L"%s %d", wd->aqi_cat[0] ? wd->aqi_cat : L"—", wd->aqi);
@@ -910,11 +975,6 @@ void ui_paint(HDC target, int cw, int ch)
     ft.top = ch - SZ(26); ft.bottom = ch - SZ(12);
     if (g_app.state == ST_ERROR && g_app.error[0]) {
         text(dc, g_app.error, ft, f_tiny, C_ERR,
-             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    } else if (wd->minutely[0]) {
-        wchar_t line[96];
-        swprintf(line, 96, L"%s · 数据来源 和风天气", wd->minutely);
-        text(dc, line, ft, f_tiny, C_MUTED,
              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     } else {
         text(dc, qweather_ready() ? L"数据来源 和风天气" : L"数据来源 Open-Meteo",
