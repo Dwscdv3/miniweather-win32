@@ -20,6 +20,49 @@ static void seterr(wchar_t *err, int cap, const wchar_t *fmt, ...)
     va_end(ap);
 }
 
+/* 取系统版本号。不能用 GetVersionEx：没有 manifest 时在 8.1+ 会谎报 6.2。
+ * RtlGetVersion 是 ntdll 的导出，从 XP 到 11 都存在，行为稳定。 */
+static int os_at_least(int major, int minor)
+{
+    typedef struct {
+        ULONG  dwOSVersionInfoSize;
+        ULONG  dwMajorVersion;
+        ULONG  dwMinorVersion;
+        ULONG  dwBuildNumber;
+        ULONG  dwPlatformId;
+        WCHAR  szCSDVersion[128];
+    } OSVI;
+
+    HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+    if (!nt) return 0;
+
+    typedef LONG (WINAPI *PFN_RTLVER)(void *);
+    PFN_RTLVER fn = (PFN_RTLVER)(void *)GetProcAddress(nt, "RtlGetVersion");
+    if (!fn) return 0;
+
+    OSVI vi;
+    memset(&vi, 0, sizeof(vi));
+    vi.dwOSVersionInfoSize = sizeof(vi);
+    if (fn(&vi) != 0) return 0;
+
+    if (vi.dwMajorVersion != (ULONG)major) return vi.dwMajorVersion > (ULONG)major;
+    return vi.dwMinorVersion >= (ULONG)minor;
+}
+
+/* 显式启用 TLS 1.2。
+ * Windows 7 的 WinHTTP 默认只协商 TLS 1.0，而 Open-Meteo 与和风天气都要求 TLS 1.2+，
+ * 不设这一项在 Win7 上会握手失败（与 32/64 位无关）。 */
+static void enable_tls12(HINTERNET hr)
+{
+    DWORD protos = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+#ifdef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3
+    DWORD both = protos | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+    if (WinHttpSetOption(hr, WINHTTP_OPTION_SECURE_PROTOCOLS, &both, sizeof(both)))
+        return;
+#endif
+    WinHttpSetOption(hr, WINHTTP_OPTION_SECURE_PROTOCOLS, &protos, sizeof(protos));
+}
+
 char *http_get_ex(const wchar_t *url, const wchar_t *extra_headers,
                   size_t *out_len, wchar_t *err, int errcap)
 {
@@ -56,9 +99,13 @@ char *http_get_ex(const wchar_t *url, const wchar_t *extra_headers,
     }
     flags = secure ? WINHTTP_FLAG_SECURE : 0;
 
-    hs = WinHttpOpen(L"MiniWeather/1.0 (Win32)", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+    /* Win8.1 才有自动代理（WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY）；更早的系统直接用
+     * 系统默认代理，避免先失败一次再回退 */
+    DWORD access = os_at_least(6, 3) ? WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
+                                     : WINHTTP_ACCESS_TYPE_DEFAULT_PROXY;
+    hs = WinHttpOpen(L"MiniWeather/1.0 (Win32)", access,
                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hs) {
+    if (!hs && access != WINHTTP_ACCESS_TYPE_DEFAULT_PROXY) {
         hs = WinHttpOpen(L"MiniWeather/1.0 (Win32)", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                          WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     }
@@ -72,6 +119,8 @@ char *http_get_ex(const wchar_t *url, const wchar_t *extra_headers,
     hr = WinHttpOpenRequest(hc, L"GET", path, NULL, WINHTTP_NO_REFERER,
                             WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!hr) { seterr(err, errcap, L"创建请求失败（%lu）", GetLastError()); goto done; }
+
+    if (secure) enable_tls12(hr);
 
     /* 首选不压缩；和风会无视 identity 强制 gzip，由 WinHTTP 自动解压兜底
      * （注意：Open-Meteo 的 deflate 响应在 WinHTTP 解压路径上会报 E_ABORT） */
