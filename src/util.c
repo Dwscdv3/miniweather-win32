@@ -1,4 +1,4 @@
-/* 字符串 / 配置文件等通用工具 */
+/* 字符串工具 */
 
 #include "app.h"
 
@@ -44,82 +44,15 @@ void trim_w(wchar_t *s)
     }
 }
 
-/* 配置目录：%APPDATA%\MiniWeather\config.txt */
-static void config_dir(wchar_t *out, int cap)
+/* "杭州 · 浙江" -> "杭州"（标签栏用短名） */
+void city_short(const wchar_t *full, wchar_t *out, int cap)
 {
-    wchar_t dir[MAX_PATH] = L"";
-    DWORD n = GetEnvironmentVariableW(L"APPDATA", dir, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) {
-        GetModuleFileNameW(NULL, dir, MAX_PATH);
-        wchar_t *p = wcsrchr(dir, L'\\');
-        if (p) *p = 0;
-    }
-    swprintf(out, (size_t)cap, L"%s\\MiniWeather", dir);
-    CreateDirectoryW(out, NULL);
-}
+    if (!out || cap <= 0) return;
+    if (!full) { out[0] = 0; return; }
 
-void config_load(wchar_t *city, int cap, double *lat, double *lon)
-{
-    wcscpy(city, L"北京");
-    *lat = 39.9042;
-    *lon = 116.4074;
-
-    wchar_t dir[MAX_PATH + 32], path[MAX_PATH + 64];
-    config_dir(dir, MAX_PATH + 32);
-    swprintf(path, MAX_PATH + 64, L"%s\\config.txt", dir);
-
-    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) return;
-
-    char buf[4096];
-    DWORD got = 0;
-    ReadFile(h, buf, sizeof(buf) - 1, &got, NULL);
-    CloseHandle(h);
-    buf[got < sizeof(buf) ? got : sizeof(buf) - 1] = 0;
-
-    wchar_t *w = u8_to_w(buf, (int)got);
-    if (!w) return;
-
-    wchar_t *ctx = NULL;
-    for (wchar_t *line = wcstok(w, L"\r\n", &ctx); line; line = wcstok(NULL, L"\r\n", &ctx)) {
-        wchar_t *eq = wcschr(line, L'=');
-        if (!eq) continue;
-        *eq = 0;
-        trim_w(line);
-        wchar_t *val = eq + 1;
-        trim_w(val);
-
-        if (!wcscmp(line, L"city") && val[0]) {
-            wcsncpy(city, val, (size_t)cap - 1);
-            city[cap - 1] = 0;
-        } else if (!wcscmp(line, L"lat")) {
-            *lat = wcstod(val, NULL);
-        } else if (!wcscmp(line, L"lon")) {
-            *lon = wcstod(val, NULL);
-        }
-    }
-    free(w);
-}
-
-void config_save(const wchar_t *city, double lat, double lon)
-{
-    wchar_t line[256];
-    swprintf(line, 256, L"city=%s\nlat=%.4f\nlon=%.4f\n", city, lat, lon);
-
-    char *u8 = w_to_u8(line);
-    if (!u8) return;
-
-    wchar_t dir[MAX_PATH + 32], path[MAX_PATH + 64];
-    config_dir(dir, MAX_PATH + 32);
-    swprintf(path, MAX_PATH + 64, L"%s\\config.txt", dir);
-
-    HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, NULL,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h != INVALID_HANDLE_VALUE) {
-        DWORD wr = 0;
-        WriteFile(h, u8, (DWORD)strlen(u8), &wr, NULL);
-        CloseHandle(h);
-    }
-    free(u8);
+    const wchar_t *sep = wcsstr(full, L" · ");
+    size_t n = sep ? (size_t)(sep - full) : wcslen(full);
+    if (n > (size_t)cap - 1) n = (size_t)cap - 1;
+    memcpy(out, full, n * sizeof(wchar_t));
+    out[n] = 0;
 }

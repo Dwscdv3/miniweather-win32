@@ -39,8 +39,8 @@ if /I "%1"=="shot" (
   exit /b 0
 )
 
-cl %CFLAGS% /Fo:build\ /Fe:build\weather.exe src\main.c src\ui.c src\api.c src\net.c src\json.c src\util.c ^
-   /link /SUBSYSTEM:WINDOWS winhttp.lib gdi32.lib user32.lib
+cl %CFLAGS% /Fo:build\ /Fe:build\weather.exe src\main.c src\ui.c src\api.c src\net.c src\json.c src\util.c src\store.c ^
+   /link /SUBSYSTEM:WINDOWS winhttp.lib gdi32.lib user32.lib advapi32.lib
 if errorlevel 1 exit /b 1
 echo [build] ok - build\weather.exe
 

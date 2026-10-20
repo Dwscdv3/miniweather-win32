@@ -8,13 +8,15 @@
 #define SZ(x) MulDiv((x), g_dpi, 96)
 #define PI_ 3.14159265358979323846
 
-static HFONT f_city, f_cond, f_body, f_small, f_tiny, f_big, f_pill;
+static HFONT f_tab, f_cond, f_body, f_small, f_tiny, f_big, f_pill, f_icon;
 static HBRUSH br_bg_edit;
 
-static HDC     g_mem;
+static HDC     g_mem;      /* 后备缓冲 */
 static HBITMAP g_bmp;
 static HGDIOBJ g_oldbmp;
 static int     g_mw, g_mh;
+
+static HDC     g_mdc;      /* 文本测量用的内存 DC */
 
 /* ---------------- 基础图元 ---------------- */
 
@@ -38,41 +40,58 @@ static void font_drop(HFONT *f)
 
 void ui_fonts_recreate(void)
 {
-    font_drop(&f_city);
+    font_drop(&f_tab);
     font_drop(&f_cond);
     font_drop(&f_body);
     font_drop(&f_small);
     font_drop(&f_tiny);
     font_drop(&f_big);
     font_drop(&f_pill);
+    font_drop(&f_icon);
 
-    f_city  = mkfont(L"Microsoft YaHei UI", 17, FW_SEMIBOLD);
+    f_tab   = mkfont(L"Microsoft YaHei UI", 12, FW_MEDIUM);
     f_cond  = mkfont(L"Microsoft YaHei UI", 15, FW_SEMIBOLD);
     f_body  = mkfont(L"Microsoft YaHei UI", 13, FW_NORMAL);
     f_small = mkfont(L"Microsoft YaHei UI", 11, FW_NORMAL);
     f_tiny  = mkfont(L"Microsoft YaHei UI", 10, FW_NORMAL);
     f_pill  = mkfont(L"Microsoft YaHei UI", 15, FW_SEMIBOLD);
     f_big   = mkfont(L"Segoe UI Light", 60, FW_NORMAL);
+    f_icon  = mkfont(L"Segoe UI Symbol", 15, FW_NORMAL);
 }
 
 void ui_init(void)
 {
+    g_mdc = CreateCompatibleDC(NULL);
     ui_fonts_recreate();
     br_bg_edit = CreateSolidBrush(C_CARD);
 }
 
 void ui_free(void)
 {
-    font_drop(&f_city); font_drop(&f_cond); font_drop(&f_body);
-    font_drop(&f_small); font_drop(&f_tiny); font_drop(&f_big); font_drop(&f_pill);
+    font_drop(&f_tab); font_drop(&f_cond); font_drop(&f_body);
+    font_drop(&f_small); font_drop(&f_tiny); font_drop(&f_big);
+    font_drop(&f_pill); font_drop(&f_icon);
+
     if (br_bg_edit) { DeleteObject(br_bg_edit); br_bg_edit = NULL; }
     if (g_mem) { SelectObject(g_mem, g_oldbmp); DeleteDC(g_mem); g_mem = NULL; }
     if (g_bmp) { DeleteObject(g_bmp); g_bmp = NULL; }
+    if (g_mdc) { DeleteDC(g_mdc); g_mdc = NULL; }
     g_mw = g_mh = 0;
 }
 
 HBRUSH ui_edit_brush(void) { return br_bg_edit; }
-HFONT  ui_edit_font(void)  { return f_city; }
+HFONT  ui_edit_font(void)  { return f_tab; }
+
+static int text_w(HFONT f, const wchar_t *s)
+{
+    if (!g_mdc || !s) return 0;
+    HGDIOBJ o = SelectObject(g_mdc, f);
+    SIZE sz;
+    sz.cx = sz.cy = 0;
+    GetTextExtentPoint32W(g_mdc, s, (int)wcslen(s), &sz);
+    SelectObject(g_mdc, o);
+    return sz.cx;
+}
 
 static void text(HDC dc, const wchar_t *s, RECT r, HFONT f, COLORREF c, UINT fmt)
 {
@@ -105,6 +124,95 @@ static void fill_circle(HDC dc, int cx, int cy, int r, COLORREF c)
     SelectObject(dc, ob);
     SelectObject(dc, op);
     DeleteObject(br);
+}
+
+static void plus_px(HDC dc, int cx, int cy, int arm, int thick, COLORREF c)
+{
+    HPEN pen = CreatePen(PS_SOLID, thick, c);
+    HGDIOBJ op = SelectObject(dc, pen);
+
+    MoveToEx(dc, cx - arm, cy, NULL);
+    LineTo(dc, cx + arm + 1, cy);
+    MoveToEx(dc, cx, cy - arm, NULL);
+    LineTo(dc, cx, cy + arm + 1);
+
+    SelectObject(dc, op);
+    DeleteObject(pen);
+}
+
+/* ---------------- 顶部布局 ---------------- */
+void ui_layout(int cw, UiLayout *L)
+{
+    if (!L) return;
+    memset(L, 0, sizeof(*L));
+
+    const int PAD = SZ(20);
+    int top = SZ(14);
+    int h   = SZ(30);
+
+    L->row.left   = PAD;
+    L->row.right  = cw - PAD;
+    L->row.top    = top;
+    L->row.bottom = top + h;
+
+    int rb = SZ(28);
+    L->refresh.right  = L->row.right;
+    L->refresh.left   = L->refresh.right - rb;
+    L->refresh.top    = top;
+    L->refresh.bottom = top + h;
+
+    int n = g_app.count;
+    if (n < 0) n = 0;
+    if (n > MAX_CITIES) n = MAX_CITIES;
+    L->ntab = n;
+
+    int tabmax = L->refresh.left - SZ(50) - PAD;   /* 右侧预留更新时间 */
+    int addw = SZ(30);
+    int gap  = SZ(5);
+    int padx = SZ(8);
+    int closw = (n > 1) ? SZ(13) : 0;
+
+    int nat[MAX_CITIES];
+    long sum = 0;
+    for (int i = 0; i < n; i++) {
+        wchar_t s[96];
+        city_short(g_app.cities[i].full, s, 96);
+        nat[i] = text_w(f_tab, s) + padx * 2 + closw;
+        if (nat[i] < SZ(52)) nat[i] = SZ(52);
+        sum += nat[i];
+    }
+
+    double k = 1.0;
+    int total = (int)sum + gap * n + addw;
+    if (total > tabmax && sum > 0) {
+        int room = tabmax - gap * n - addw;
+        if (room < n * SZ(44)) room = n * SZ(44);
+        k = (double)room / (double)sum;
+    }
+
+    int x = PAD;
+    for (int i = 0; i < n; i++) {
+        int w = (int)lround(nat[i] * k);
+        if (w < SZ(44)) w = SZ(44);
+
+        L->tabs[i].left   = x;
+        L->tabs[i].right  = x + w;
+        L->tabs[i].top    = top;
+        L->tabs[i].bottom = top + h;
+
+        if (closw) {
+            L->close[i].left   = L->tabs[i].right - closw - SZ(3);
+            L->close[i].right  = L->tabs[i].right - SZ(1);
+            L->close[i].top    = top;
+            L->close[i].bottom = top + h;
+        }
+        x += w + gap;
+    }
+
+    L->add.left   = x;
+    L->add.right  = x + addw;
+    L->add.top    = top;
+    L->add.bottom = top + h;
 }
 
 /* ---------------- 天气图标 ---------------- */
@@ -525,6 +633,61 @@ static void center_note(HDC dc, int cw, int ch, const wchar_t *a, const wchar_t 
     }
 }
 
+static void draw_tabbar(HDC dc, const UiLayout *L, int cw)
+{
+    for (int i = 0; i < L->ntab; i++) {
+        int act = (i == g_app.active);
+        int hov = (g_app.hover_tab == i);
+
+        if (act)          fill_rr(dc, L->tabs[i], SZ(9), C_CARD2);
+        else if (hov)     fill_rr(dc, L->tabs[i], SZ(9), C_CARD);
+
+        wchar_t s[96];
+        city_short(g_app.cities[i].full, s, 96);
+
+        /* 右侧要预留 × 的位置；为保证文字居中，左侧预留同样宽度 */
+        RECT tr = L->tabs[i];
+        int ins = SZ(8) + (g_app.count > 1 ? SZ(13) / 2 : 0);
+        tr.left  += ins;
+        tr.right -= ins;
+        text(dc, s, tr, f_tab, (act || hov) ? C_TEXT : C_MUTED,
+             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        if (g_app.count > 1 && hov) {
+            text(dc, L"×", L->close[i], f_tab,
+                 (g_app.hover_close == i) ? C_ERR : C_MUTED,
+                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+    }
+
+    /* ＋ 添加城市：圆形按钮，加号用线条画保证居中 */
+    int ad = L->add.right - L->add.left;
+    fill_rr(dc, L->add, ad / 2, g_app.hover_add ? C_CARD2 : C_CARD);
+    plus_px(dc, (L->add.left + L->add.right) / 2, (L->add.top + L->add.bottom) / 2,
+            SZ(5), SZ(2), g_app.hover_add ? C_TEXT : C_MUTED);
+
+    /* 更新时间 + 刷新按钮 */
+    int x0 = L->ntab > 0 ? L->add.right : L->row.left;
+    RECT tr;
+    tr.left = x0 + SZ(4);
+    tr.right = L->refresh.left - SZ(8);
+    tr.top = L->row.top;
+    tr.bottom = L->row.bottom;
+
+    wchar_t info[32] = L"";
+    if (g_app.busy)     wcscpy(info, L"更新中");
+    else if (g_app.w)   wcsncpy(info, g_app.w->updated, 31);
+    text(dc, info, tr, f_tiny, C_MUTED, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+
+    if (!g_app.busy && g_app.hover_refresh)
+        fill_rr(dc, L->refresh, (L->refresh.right - L->refresh.left) / 2, C_CARD2);
+
+    COLORREF rc = g_app.busy ? RGB(0x4A, 0x55, 0x62)
+                             : (g_app.hover_refresh ? C_TEXT : C_MUTED);
+    text(dc, L"\u21BB", L->refresh, f_icon, rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    (void)cw;
+}
+
 void ui_paint(HDC target, int cw, int ch)
 {
     ensure_buffer(target, cw, ch);
@@ -542,39 +705,16 @@ void ui_paint(HDC target, int cw, int ch)
     int x = PAD;
     int w = cw - PAD * 2;
 
-    /* ---- 城市行 ---- */
-    int y = SZ(16);
-    RECT rh;
-    rh.left = x; rh.right = x + w - SZ(126);
-    rh.top = y; rh.bottom = y + SZ(24);
+    UiLayout L;
+    ui_layout(cw, &L);
+    draw_tabbar(dc, &L, cw);
 
+    int y = L.row.bottom + SZ(12);
     const Weather *wd = g_app.w;
-    const wchar_t *cname = wd ? wd->city : (g_app.city[0] ? g_app.city : L"正在定位");
-    text(dc, cname, rh, f_city, C_TEXT,
-         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-
-    wchar_t info[96] = L"";
-    COLORREF infoc = C_MUTED;
-    if (g_app.state == ST_ERROR && wd) {
-        swprintf(info, 96, L"%s", g_app.error);      /* 有旧数据时只在右上角提示 */
-        infoc = C_ERR;
-    } else if (g_app.state == ST_LOADING) {
-        swprintf(info, 96, L"正在更新…");
-    } else if (wd) {
-        swprintf(info, 96, L"更新于 %s", wd->updated);
-    }
-
-    RECT ri;
-    ri.left = x + w - SZ(220); ri.right = x + w;
-    ri.top = y; ri.bottom = y + SZ(24);
-    text(dc, info, ri, f_small, infoc,
-         DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-
-    y += SZ(24) + SZ(8);
 
     if (!wd) {
         if (g_app.state == ST_ERROR)
-            center_note(dc, cw, ch, g_app.error, L"按 F5 重试，或按 C 换一个城市");
+            center_note(dc, cw, ch, g_app.error, L"按 F5 或点右上角刷新重试");
         else
             center_note(dc, cw, ch, L"正在获取天气…", L"首次启动需要联网");
         BitBlt(target, 0, 0, cw, ch, dc, 0, 0, SRCCOPY);
@@ -672,22 +812,16 @@ void ui_paint(HDC target, int cw, int ch)
         draw_daily(dc, dcard);
     }
 
-    /* ---- 底栏 ---- */
+    /* ---- 底栏：出错时在此提示，否则显示数据来源 ---- */
     RECT ft;
     ft.left = x; ft.right = x + w;
     ft.top = ch - SZ(26); ft.bottom = ch - SZ(12);
-    text(dc, L"F5 刷新   ·   C 换城市   ·   数据 Open-Meteo", ft, f_tiny, C_MUTED,
-         DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    if (g_app.state == ST_ERROR && g_app.error[0])
+        text(dc, g_app.error, ft, f_tiny, C_ERR,
+             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    else
+        text(dc, L"数据来源 Open-Meteo", ft, f_tiny, C_MUTED,
+             DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     BitBlt(target, 0, 0, cw, ch, dc, 0, 0, SRCCOPY);
-}
-
-RECT ui_city_rect(int cw)
-{
-    RECT r;
-    r.left = SZ(14);
-    r.right = cw - SZ(136);
-    r.top = SZ(12);
-    r.bottom = SZ(12) + SZ(32);
-    return r;
 }

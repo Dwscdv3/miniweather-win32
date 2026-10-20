@@ -8,15 +8,17 @@
 #include <wchar.h>
 
 #define APP_TITLE   L"微天气"
-#define APP_VERSION L"1.0.0"
+#define APP_VERSION L"1.1.0"
 
 /* 工作线程 -> UI 线程 */
 #define WM_APP_WEATHER_OK  (WM_APP + 1)
 #define WM_APP_WEATHER_ERR (WM_APP + 2)
+#define WM_APP_COMMIT_CITY (WM_APP + 3)   /* 输入框回车 */
 
 /* 暗色主题配色 */
 #define C_BG     RGB(0x0E, 0x12, 0x17)
 #define C_CARD   RGB(0x17, 0x1D, 0x25)
+#define C_CARD2  RGB(0x24, 0x2E, 0x3A)   /* 选中标签 / 悬停 */
 #define C_LINE   RGB(0x27, 0x30, 0x3B)
 #define C_TEXT   RGB(0xEA, 0xEE, 0xF3)
 #define C_MUTED  RGB(0x86, 0x93, 0xA3)
@@ -26,12 +28,13 @@
 
 enum { ST_LOADING = 0, ST_READY = 1, ST_ERROR = 2 };
 
-#define HOURS_MAX 24
-#define DAYS_MAX  7
+#define HOURS_MAX  24
+#define DAYS_MAX   7
+#define MAX_CITIES 5
 
 /* 窗口逻辑尺寸（96 DPI） */
 #define WIN_W 460
-#define WIN_H 596
+#define WIN_H 590
 
 typedef struct {
     wchar_t weekday[12];
@@ -61,12 +64,27 @@ typedef struct {
     wchar_t query[96];
 } Job;
 
+/* 一个常用城市；full 形如 "杭州 · 浙江" */
 typedef struct {
+    wchar_t full[96];
+    double  lat, lon;
+} City;
+
+typedef struct {
+    City     cities[MAX_CITIES];
+    int      count;
+    int      active;
+
     Weather *w;
     int      state;
-    wchar_t  city[96];              /* 当前查询城市（数据未到时也能显示） */
     wchar_t  error[192];
     int      busy;
+
+    /* 鼠标悬停（-1 表示无） */
+    int      hover_tab;
+    int      hover_close;
+    int      hover_add;
+    int      hover_refresh;
 } AppState;
 
 extern AppState g_app;
@@ -85,8 +103,12 @@ const wchar_t *wind_dir_text(int deg);
 /* util.c */
 wchar_t *u8_to_w(const char *s, int n);
 char    *w_to_u8(const wchar_t *s);
-void     config_load(wchar_t *city, int cap, double *lat, double *lon);
-void     config_save(const wchar_t *city, double lat, double lon);
 void     trim_w(wchar_t *s);
+void     city_short(const wchar_t *full, wchar_t *out, int cap);
+
+/* store.c —— 常用城市持久化（注册表 HKCU\Software\MiniWeather） */
+int  store_load(City *cities, int max, int *count, wchar_t *active, int cap);
+void store_save(const City *cities, int count, const wchar_t *active);
+int  legacy_load(wchar_t *city, int cap, double *lat, double *lon);
 
 #endif

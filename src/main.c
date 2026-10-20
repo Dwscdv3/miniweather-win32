@@ -1,9 +1,10 @@
-/* 窗口、消息循环、后台拉取调度 */
+/* 窗口、消息循环、常用城市管理与后台拉取调度 */
 
 #include "app.h"
 #include "ui.h"
 
 #include <windowsx.h>
+#include <math.h>
 #include <stdio.h>
 
 #define MZ(x) MulDiv((x), g_dpi, 96)
@@ -14,9 +15,53 @@ int      g_dpi = 96;
 static HWND    g_hwnd;
 static HWND    g_edit;
 static WNDPROC g_edit_old;
-static wchar_t g_city[96] = L"北京";
-static double  g_lat = 39.9042;
-static double  g_lon = 116.4074;
+static int     g_job_mode;          /* 当前后台任务的类型 */
+static wchar_t g_pending_query[96]; /* 忙时提交的城市，等当前任务结束后再查 */
+
+/* ---------------- 常用城市 ---------------- */
+
+static void save_store(void)
+{
+    if (g_app.count > 0)
+        store_save(g_app.cities, g_app.count, g_app.cities[g_app.active].full);
+}
+
+static void cities_init(void)
+{
+    wchar_t act[96] = L"";
+
+    if (store_load(g_app.cities, MAX_CITIES, &g_app.count, act, 96)) {
+        g_app.active = 0;
+        for (int i = 0; i < g_app.count; i++) {
+            if (!wcscmp(g_app.cities[i].full, act)) { g_app.active = i; break; }
+        }
+        return;
+    }
+
+    wchar_t city[96] = L"";
+    double lat = 0, lon = 0;
+    if (legacy_load(city, 96, &lat, &lon)) {
+        wcsncpy(g_app.cities[0].full, city, 95);
+        g_app.cities[0].lat = lat;
+        g_app.cities[0].lon = lon;
+    } else {
+        wcscpy(g_app.cities[0].full, L"北京");
+        g_app.cities[0].lat = 39.9042;
+        g_app.cities[0].lon = 116.4074;
+    }
+    g_app.count  = 1;
+    g_app.active = 0;
+    save_store();
+}
+
+static int find_city(const wchar_t *name, double lat, double lon)
+{
+    for (int i = 0; i < g_app.count; i++) {
+        if (name && name[0] && !wcscmp(g_app.cities[i].full, name)) return i;
+        if (fabs(g_app.cities[i].lat - lat) < 0.05 && fabs(g_app.cities[i].lon - lon) < 0.05) return i;
+    }
+    return -1;
+}
 
 /* ---------------- 后台任务 ---------------- */
 
@@ -39,14 +84,15 @@ static DWORD WINAPI worker(LPVOID param)
     return 0;
 }
 
-static void start_job(Job *job)
+static void start_job(Job *job, int mode)
 {
     if (!job) return;
     if (g_app.busy) { free(job); return; }
 
-    g_app.busy  = 1;
-    g_app.state = ST_LOADING;
+    g_app.busy     = 1;
+    g_app.state    = ST_LOADING;
     g_app.error[0] = 0;
+    g_job_mode     = mode;
     InvalidateRect(g_hwnd, NULL, FALSE);
 
     HANDLE th = CreateThread(NULL, 0, worker, job, 0, NULL);
@@ -61,32 +107,167 @@ static void start_job(Job *job)
     }
 }
 
-static void refresh(void)
+static void refresh_active(void)
 {
-    if (g_app.busy) return;
+    if (g_app.busy || g_app.count <= 0) return;
+
+    const City *c = &g_app.cities[g_app.active];
+    Job *job = (Job *)calloc(1, sizeof(Job));
+    if (!job) return;
+
+    job->mode = 0;
+    job->lat  = c->lat;
+    job->lon  = c->lon;
+    wcsncpy(job->city, c->full, 95);
+    start_job(job, 0);
+}
+
+/* 忙时提交的搜索请求排队执行（只保留最后一条） */
+static void run_pending_query(void)
+{
+    if (!g_pending_query[0] || g_app.busy) return;
+
+    wchar_t q[96];
+    wcsncpy(q, g_pending_query, 95);
+    q[95] = 0;
+    g_pending_query[0] = 0;
 
     Job *job = (Job *)calloc(1, sizeof(Job));
     if (!job) return;
-    job->mode = 0;
-    job->lat  = g_lat;
-    job->lon  = g_lon;
-    wcsncpy(job->city, g_city, 95);
-    start_job(job);
+    job->mode = 1;
+    wcsncpy(job->query, q, 95);
+    start_job(job, 1);
+}
+
+static void activate_city(int idx)
+{
+    if (idx < 0 || idx >= g_app.count) return;
+    if (idx == g_app.active && g_app.state != ST_ERROR) return;
+
+    g_app.active   = idx;
+    g_app.state    = ST_LOADING;
+    g_app.error[0] = 0;
+    save_store();
+    InvalidateRect(g_hwnd, NULL, FALSE);
+
+    refresh_active();   /* 若正忙，旧结果会在返回时因坐标不符被丢弃并重取 */
+}
+
+static void delete_city(int idx)
+{
+    if (g_app.count <= 1 || idx < 0 || idx >= g_app.count) return;
+
+    int was_active = (idx == g_app.active);
+
+    memmove(&g_app.cities[idx], &g_app.cities[idx + 1],
+            (size_t)(g_app.count - idx - 1) * sizeof(City));
+    g_app.count--;
+
+    if (g_app.active > idx) g_app.active--;
+    else if (g_app.active >= g_app.count) g_app.active = g_app.count - 1;
+
+    save_store();
+    g_app.hover_tab = -1;
+    g_app.hover_close = -1;
+    InvalidateRect(g_hwnd, NULL, FALSE);
+
+    if (was_active) {
+        g_app.state = ST_LOADING;
+        refresh_active();
+    }
+}
+
+/* ---------------- 命中测试 ---------------- */
+
+enum { HIT_NONE = 0, HIT_TAB, HIT_CLOSE, HIT_ADD, HIT_REFRESH };
+
+static int hit_test(POINT pt, int *idx)
+{
+    if (idx) *idx = -1;
+
+    RECT rc;
+    GetClientRect(g_hwnd, &rc);
+    UiLayout L;
+    ui_layout(rc.right, &L);
+
+    for (int i = 0; i < L.ntab; i++) {
+        if (g_app.count > 1 && PtInRect(&L.close[i], pt)) {
+            if (idx) *idx = i;
+            return HIT_CLOSE;
+        }
+        if (PtInRect(&L.tabs[i], pt)) {
+            if (idx) *idx = i;
+            return HIT_TAB;
+        }
+    }
+    if (PtInRect(&L.add, pt)) return HIT_ADD;
+    if (!g_app.busy && PtInRect(&L.refresh, pt)) return HIT_REFRESH;
+    return HIT_NONE;
+}
+
+static void set_hover(POINT pt)
+{
+    int idx = -1;
+    int hit = hit_test(pt, &idx);
+
+    int ht = (hit == HIT_TAB || hit == HIT_CLOSE) ? idx : -1;
+    int hc = (hit == HIT_CLOSE) ? idx : -1;
+    int ha = (hit == HIT_ADD) ? 1 : 0;
+    int hr = (hit == HIT_REFRESH) ? 1 : 0;
+
+    if (ht != g_app.hover_tab || hc != g_app.hover_close ||
+        ha != g_app.hover_add || hr != g_app.hover_refresh) {
+        g_app.hover_tab     = ht;
+        g_app.hover_close   = hc;
+        g_app.hover_add     = ha;
+        g_app.hover_refresh = hr;
+        InvalidateRect(g_hwnd, NULL, FALSE);
+    }
+}
+
+static void clear_hover(void)
+{
+    if (g_app.hover_tab < 0 && g_app.hover_close < 0 &&
+        !g_app.hover_add && !g_app.hover_refresh) return;
+
+    g_app.hover_tab = g_app.hover_close = -1;
+    g_app.hover_add = g_app.hover_refresh = 0;
+    InvalidateRect(g_hwnd, NULL, FALSE);
 }
 
 /* ---------------- 城市输入框 ---------------- */
 
 static void hide_city_edit(void)
 {
-    if (g_edit) ShowWindow(g_edit, SW_HIDE);
+    if (g_edit && IsWindowVisible(g_edit)) ShowWindow(g_edit, SW_HIDE);
+}
+
+static void edit_rect(RECT *out)
+{
+    RECT rc;
+    GetClientRect(g_hwnd, &rc);
+    UiLayout L;
+    ui_layout(rc.right, &L);
+
+    out->left   = L.row.left - MZ(2);
+    out->right  = L.refresh.left - MZ(6);
+    out->top    = L.row.top - MZ(3);
+    out->bottom = L.row.bottom + MZ(3);
 }
 
 static LRESULT CALLBACK EditProc(HWND h, UINT m, WPARAM wp, LPARAM lp)
 {
-    if (m == WM_KEYDOWN && wp == VK_RETURN) { SendMessageW(g_hwnd, WM_APP + 3, 0, 0); return 0; }
+    if (m == WM_KEYDOWN && wp == VK_RETURN) {
+        PostMessageW(g_hwnd, WM_APP_COMMIT_CITY, 0, 0);
+        return 0;
+    }
     if (m == WM_KEYDOWN && wp == VK_ESCAPE) {
         hide_city_edit();
         SetFocus(g_hwnd);
+        return 0;
+    }
+    if (m == WM_KILLFOCUS) {
+        hide_city_edit();
         return 0;
     }
     if (m == WM_CHAR && (wp == VK_RETURN || wp == VK_ESCAPE)) return 0;
@@ -97,16 +278,18 @@ static void ensure_edit(void)
 {
     if (g_edit) return;
 
-    RECT cr = ui_city_rect(MZ(WIN_W));
+    RECT r;
+    edit_rect(&r);
+
     g_edit = CreateWindowExW(0, L"EDIT", L"",
                              WS_CHILD | ES_AUTOHSCROLL,
-                             cr.left, cr.top, cr.right - cr.left, cr.bottom - cr.top,
+                             r.left, r.top, r.right - r.left, r.bottom - r.top,
                              g_hwnd, (HMENU)1001, GetModuleHandleW(NULL), NULL);
     if (!g_edit) return;
 
     g_edit_old = (WNDPROC)SetWindowLongPtrW(g_edit, GWLP_WNDPROC, (LONG_PTR)EditProc);
     SendMessageW(g_edit, WM_SETFONT, (WPARAM)ui_edit_font(), TRUE);
-    SendMessageW(g_edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(MZ(6), MZ(6)));
+    SendMessageW(g_edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(MZ(8), MZ(8)));
     SendMessageW(g_edit, EM_SETLIMITTEXT, 48, 0);
 }
 
@@ -115,22 +298,13 @@ static void show_city_edit(void)
     ensure_edit();
     if (!g_edit) return;
 
-    RECT cr = ui_city_rect(MZ(WIN_W));
-    MoveWindow(g_edit, cr.left, cr.top, cr.right - cr.left, cr.bottom - cr.top, TRUE);
+    RECT r;
+    edit_rect(&r);
+    MoveWindow(g_edit, r.left, r.top, r.right - r.left, r.bottom - r.top, TRUE);
 
-    if (g_app.w) {
-        wchar_t tmp[96];
-        wcsncpy(tmp, g_app.w->city, 95);
-        wchar_t *dot = wcsstr(tmp, L" · ");
-        if (dot) *dot = 0;
-        SendMessageW(g_edit, WM_SETTEXT, 0, (LPARAM)tmp);
-    } else {
-        SendMessageW(g_edit, WM_SETTEXT, 0, (LPARAM)L"");
-    }
-
+    SendMessageW(g_edit, WM_SETTEXT, 0, (LPARAM)L"");
     ShowWindow(g_edit, SW_SHOW);
     SetFocus(g_edit);
-    SendMessageW(g_edit, EM_SETSEL, 0, -1);
 }
 
 static void commit_city(void)
@@ -144,11 +318,28 @@ static void commit_city(void)
     SetFocus(g_hwnd);
     if (!buf[0]) return;
 
+    /* 已经是常用城市就直接切换，避免重复添加 */
+    for (int i = 0; i < g_app.count; i++) {
+        wchar_t sn[96];
+        city_short(g_app.cities[i].full, sn, 96);
+        if (!wcscmp(sn, buf) || !wcscmp(g_app.cities[i].full, buf)) {
+            activate_city(i);
+            return;
+        }
+    }
+
+    if (g_app.busy) {
+        /* 正在拉取：排队，等这次结束后自动查 */
+        wcsncpy(g_pending_query, buf, 95);
+        g_pending_query[95] = 0;
+        return;
+    }
+
     Job *job = (Job *)calloc(1, sizeof(Job));
     if (!job) return;
     job->mode = 1;
     wcsncpy(job->query, buf, 95);
-    start_job(job);
+    start_job(job, 1);
 }
 
 /* ---------------- 窗口过程 ---------------- */
@@ -186,6 +377,53 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         InvalidateRect(h, NULL, FALSE);
         return 0;
 
+    case WM_MOUSEMOVE: {
+        POINT pt;
+        pt.x = GET_X_LPARAM(lp);
+        pt.y = GET_Y_LPARAM(lp);
+        set_hover(pt);
+
+        TRACKMOUSEEVENT tme;
+        tme.cbSize      = sizeof(tme);
+        tme.dwFlags     = TME_LEAVE;
+        tme.hwndTrack   = h;
+        tme.dwHoverTime = 0;
+        TrackMouseEvent(&tme);
+        return 0;
+    }
+
+    case WM_MOUSELEAVE:
+        clear_hover();
+        return 0;
+
+    case WM_SETCURSOR:
+        if (LOWORD(lp) == HTCLIENT) {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(h, &pt);
+            if (hit_test(pt, NULL) != HIT_NONE) {
+                SetCursor(LoadCursorW(NULL, IDC_HAND));
+                return TRUE;
+            }
+        }
+        break;
+
+    case WM_LBUTTONUP: {
+        POINT pt;
+        pt.x = GET_X_LPARAM(lp);
+        pt.y = GET_Y_LPARAM(lp);
+
+        int idx = -1;
+        switch (hit_test(pt, &idx)) {
+        case HIT_CLOSE:   delete_city(idx); break;
+        case HIT_TAB:     activate_city(idx); break;
+        case HIT_ADD:     show_city_edit(); break;
+        case HIT_REFRESH: refresh_active(); break;
+        default: break;
+        }
+        return 0;
+    }
+
     case WM_DPICHANGED: {
         g_dpi = HIWORD(wp);
         RECT *pr = (RECT *)lp;
@@ -195,38 +433,22 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         ui_fonts_recreate();
         if (g_edit) {
             SendMessageW(g_edit, WM_SETFONT, (WPARAM)ui_edit_font(), TRUE);
-            RECT cr = ui_city_rect(MZ(WIN_W));
-            MoveWindow(g_edit, cr.left, cr.top, cr.right - cr.left, cr.bottom - cr.top, TRUE);
+            RECT r;
+            edit_rect(&r);
+            MoveWindow(g_edit, r.left, r.top, r.right - r.left, r.bottom - r.top, TRUE);
         }
         InvalidateRect(h, NULL, FALSE);
         return 0;
     }
 
     case WM_TIMER:
-        if (wp == 1) refresh();
+        if (wp == 1) refresh_active();
         return 0;
 
     case WM_KEYDOWN:
-        if (wp == VK_F5) { refresh(); return 0; }
+        if (wp == VK_F5) { refresh_active(); return 0; }
         if (wp == 'C')   { show_city_edit(); return 0; }
         break;
-
-    case WM_LBUTTONUP: {
-        POINT pt;
-        pt.x = GET_X_LPARAM(lp);
-        pt.y = GET_Y_LPARAM(lp);
-        RECT rc;
-        GetClientRect(h, &rc);
-        RECT cr = ui_city_rect(rc.right);
-        if (PtInRect(&cr, pt)) {
-            if (g_edit && IsWindowVisible(g_edit)) { hide_city_edit(); SetFocus(h); }
-            else show_city_edit();
-        }
-        return 0;
-    }
-
-    case WM_SETCURSOR:
-        return DefWindowProcW(h, m, wp, lp);
 
     case WM_CTLCOLOREDIT: {
         HDC dc = (HDC)wp;
@@ -235,25 +457,54 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         return (LRESULT)ui_edit_brush();
     }
 
-    case WM_APP + 3:      /* 输入框回车 */
+    case WM_APP_COMMIT_CITY:
         commit_city();
         return 0;
 
     case WM_APP_WEATHER_OK: {
         Weather *w = (Weather *)lp;
+
+        /* 搜索回来的新城市：入列或复用已有条目 */
+        if (g_job_mode == 1) {
+            int idx = find_city(w->city, w->lat, w->lon);
+            if (idx < 0) {
+                if (g_app.count >= MAX_CITIES) {
+                    weather_free(w);
+                    g_app.busy  = 0;
+                    g_app.state = ST_ERROR;
+                    g_app.error[0] = 0;
+                    swprintf(g_app.error, 192, L"最多保存 %d 个常用城市", MAX_CITIES);
+                    InvalidateRect(h, NULL, FALSE);
+                    run_pending_query();
+                    return 0;
+                }
+                idx = g_app.count++;
+                wcsncpy(g_app.cities[idx].full, w->city, 95);
+                g_app.cities[idx].lat = w->lat;
+                g_app.cities[idx].lon = w->lon;
+            }
+            g_app.active = idx;
+            save_store();
+        }
+
+        /* 结果必须对应当前选中的城市，否则丢弃并重新拉取 */
+        const City *cur = &g_app.cities[g_app.active];
+        if (fabs(w->lat - cur->lat) > 0.02 || fabs(w->lon - cur->lon) > 0.02) {
+            weather_free(w);
+            g_app.busy = 0;
+            if (g_pending_query[0]) run_pending_query();
+            else                    refresh_active();
+            return 0;
+        }
+
         if (g_app.w) weather_free(g_app.w);
-        g_app.w     = w;
-        g_app.state = ST_READY;
-        g_app.busy  = 0;
+        g_app.w        = w;
+        g_app.state    = ST_READY;
+        g_app.busy     = 0;
         g_app.error[0] = 0;
 
-        wcsncpy(g_city, w->city, 95);
-        wcsncpy(g_app.city, w->city, 95);
-        g_lat = w->lat;
-        g_lon = w->lon;
-        config_save(w->city, w->lat, w->lon);
-
         InvalidateRect(h, NULL, FALSE);
+        run_pending_query();
         return 0;
     }
 
@@ -269,6 +520,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         g_app.state = ST_ERROR;
         g_app.busy  = 0;
         InvalidateRect(h, NULL, FALSE);
+        run_pending_query();
         return 0;
     }
 
@@ -307,9 +559,10 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, LPWSTR cmdline, int show)
     }
     if (g_dpi <= 0) g_dpi = 96;
 
+    cities_init();
+    g_app.hover_tab   = -1;      /* 0 是合法标签下标，必须显式初始化 */
+    g_app.hover_close = -1;
     ui_init();
-    config_load(g_city, 96, &g_lat, &g_lon);
-    wcsncpy(g_app.city, g_city, 95);
 
     WNDCLASSEXW wc;
     memset(&wc, 0, sizeof(wc));
@@ -346,7 +599,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, LPWSTR cmdline, int show)
     UpdateWindow(g_hwnd);
 
     SetTimer(g_hwnd, 1, 10 * 60 * 1000, NULL);
-    refresh();
+    refresh_active();
 
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
