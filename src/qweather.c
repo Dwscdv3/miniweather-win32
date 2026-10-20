@@ -1,5 +1,5 @@
 /* 和风天气（QWeather）数据接入
- * 鉴权：请求头 X-QW-Api-Key；域名必须是账号专属 API Host（形如 xxxx.re.qweatherapi.com）
+ * 鉴权：请求头 X-QW-Api-Key；域名必须是账号专属 API Host（形如 xxxxx.re.qweatherapi.com）
  * 单位：温度 ℃、风速 km/h、气压 hPa、降水 mm */
 
 #include "app.h"

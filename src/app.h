@@ -113,7 +113,7 @@ extern int      g_dpi;
 
 /* 数据源配置（和风天气）：从注册表读取，未配置则回退 Open-Meteo */
 typedef struct {
-    wchar_t host[128];              /* 形如 xxxxx.re.qweatherapi.com */
+    wchar_t host[128];              /* 形如 xxxxx.re.qweatherapi.com（账号专属 Host） */
     wchar_t key[64];
 } ApiConfig;
 
