@@ -528,9 +528,24 @@ static void draw_daily(HDC dc, RECT card)
     int bar_r  = card.right - SZ(14) - SZ(42);
     int row_h  = SZ(26);
 
+    /* 卡片小标题 + 日出日落 */
+    RECT hd;
+    hd.left  = left;
+    hd.right = card.right - SZ(14);
+    hd.top   = card.top + SZ(11);
+    hd.bottom = hd.top + SZ(15);
+    text(dc, L"未来 7 天", hd, f_tiny, C_MUTED, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    if (w->sunrise[0] && w->sunset[0]) {
+        wchar_t sun[48];
+        swprintf(sun, 48, L"日出 %s · 日落 %s", w->sunrise, w->sunset);
+        text(dc, sun, hd, f_tiny, C_MUTED, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    int ry0 = card.top + SZ(30);
+
     for (int i = 0; i < n; i++) {
         const DayForecast *d = &w->days[i];
-        int ry = card.top + SZ(8) + row_h * i;
+        int ry = ry0 + row_h * i;
 
         RECT rw;
         rw.left = left; rw.right = left + SZ(52);
@@ -582,7 +597,7 @@ static void draw_daily(HDC dc, RECT card)
     }
 }
 
-static void draw_stat(HDC dc, RECT r, const wchar_t *label, const wchar_t *value)
+static void draw_stat(HDC dc, RECT r, const wchar_t *label, const wchar_t *value, COLORREF vcol)
 {
     fill_rr(dc, r, SZ(12), C_CARD);
 
@@ -594,7 +609,21 @@ static void draw_stat(HDC dc, RECT r, const wchar_t *label, const wchar_t *value
     RECT vr;
     vr.left = r.left + SZ(12); vr.right = r.right - SZ(8);
     vr.top = r.top + SZ(25); vr.bottom = r.bottom - SZ(6);
-    text(dc, value, vr, f_pill, C_TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    text(dc, value, vr, f_pill, vcol, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
+
+/* AQI 等级配色（接口没给 color 时兜底） */
+static COLORREF aqi_level_color(int level)
+{
+    switch (level) {
+    case 1:  return RGB(0x4C, 0xD1, 0x37);   /* 优 */
+    case 2:  return RGB(0xF2, 0xD0, 0x4B);   /* 良 */
+    case 3:  return RGB(0xFF, 0x9E, 0x3D);   /* 轻度污染 */
+    case 4:  return RGB(0xFF, 0x5B, 0x5B);   /* 中度污染 */
+    case 5:  return RGB(0xC0, 0x6B, 0xE0);   /* 重度污染 */
+    case 6:  return RGB(0x9B, 0x3B, 0x3B);   /* 严重污染 */
+    default: return C_TEXT;
+    }
 }
 
 /* ---------------- 主绘制 ---------------- */
@@ -773,17 +802,23 @@ void ui_paint(HDC target, int cw, int ch)
         p.top = y; p.bottom = y + SZ(54);
 
         wchar_t lbl[32], val[32];
+        COLORREF vcol = C_TEXT;
         if (i == 0) {
             wcscpy(lbl, L"相对湿度");
             swprintf(val, 32, L"%d%%", wd->humidity);
         } else if (i == 1) {
             swprintf(lbl, 32, L"风速 · %s", wind_dir_text(wd->wind_dir));
             swprintf(val, 32, L"%.0f km/h", wd->wind);
+        } else if (wd->has_aqi) {
+            wcscpy(lbl, L"空气质量");
+            swprintf(val, 32, L"%s %d", wd->aqi_cat[0] ? wd->aqi_cat : L"—", wd->aqi);
+            vcol = wd->aqi_color ? wd->aqi_color : aqi_level_color(wd->aqi_level);
         } else {
+            /* 没有空气质量数据时退回显示气压，不留空位 */
             wcscpy(lbl, L"气压");
             swprintf(val, 32, L"%.0f hPa", wd->pressure);
         }
-        draw_stat(dc, p, lbl, val);
+        draw_stat(dc, p, lbl, val, vcol);
     }
     y += SZ(54) + SZ(12);
 
@@ -798,6 +833,14 @@ void ui_paint(HDC target, int cw, int ch)
     htitle.top = hcard.top + SZ(8); htitle.bottom = hcard.top + SZ(22);
     text(dc, L"未来 24 小时", htitle, f_tiny, C_MUTED,
          DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    /* 气压降级放到这里：小字、右对齐，不抢视觉重心 */
+    if (wd->has_aqi) {
+        wchar_t pb[32];
+        swprintf(pb, 32, L"气压 %.0f hPa", wd->pressure);
+        text(dc, pb, htitle, f_tiny, C_MUTED,
+             DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    }
 
     if (wd->hcount > 1) {
         RECT hplot;
@@ -814,7 +857,7 @@ void ui_paint(HDC target, int cw, int ch)
         RECT dcard;
         dcard.left = x; dcard.right = x + w;
         dcard.top = y;
-        dcard.bottom = y + SZ(16) + SZ(26) * wd->dcount;
+        dcard.bottom = y + SZ(30) + SZ(26) * wd->dcount + SZ(10);
         fill_rr(dc, dcard, SZ(14), C_CARD);
         draw_daily(dc, dcard);
     }
@@ -823,12 +866,18 @@ void ui_paint(HDC target, int cw, int ch)
     RECT ft;
     ft.left = x; ft.right = x + w;
     ft.top = ch - SZ(26); ft.bottom = ch - SZ(12);
-    if (g_app.state == ST_ERROR && g_app.error[0])
+    if (g_app.state == ST_ERROR && g_app.error[0]) {
         text(dc, g_app.error, ft, f_tiny, C_ERR,
              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    else
+    } else if (wd->minutely[0]) {
+        wchar_t line[96];
+        swprintf(line, 96, L"%s · 数据来源 和风天气", wd->minutely);
+        text(dc, line, ft, f_tiny, C_MUTED,
+             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    } else {
         text(dc, qweather_ready() ? L"数据来源 和风天气" : L"数据来源 Open-Meteo",
              ft, f_tiny, C_MUTED, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
 
     BitBlt(target, 0, 0, cw, ch, dc, 0, 0, SRCCOPY);
 }

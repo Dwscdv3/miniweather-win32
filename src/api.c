@@ -12,7 +12,7 @@
     L"&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day," \
     L"weather_code,wind_speed_10m,wind_direction_10m,pressure_msl,precipitation" \
     L"&hourly=temperature_2m,precipitation_probability" \
-    L"&daily=weather_code,temperature_2m_max,temperature_2m_min" \
+    L"&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset" \
     L"&timezone=auto&forecast_days=7&wind_speed_unit=kmh"
 
 static void seterr(wchar_t *err, int cap, const wchar_t *fmt, ...)
@@ -201,6 +201,8 @@ static Weather *openmeteo_fetch(const Job *job, wchar_t *err, int errcap)
     JNode *dcode = json_obj(dl, L"weather_code");
     JNode *dmax  = json_obj(dl, L"temperature_2m_max");
     JNode *dmin  = json_obj(dl, L"temperature_2m_min");
+    JNode *dsr   = json_obj(dl, L"sunrise");
+    JNode *dss   = json_obj(dl, L"sunset");
     int dn = json_count(dtime);
 
     for (int i = 0; i < dn && i < DAYS_MAX; i++) {
@@ -211,6 +213,14 @@ static Weather *openmeteo_fetch(const Job *job, wchar_t *err, int errcap)
         d->code = (int)json_num(json_at(dcode, i), 0);
         d->tmax = json_num(json_at(dmax, i), 0);
         d->tmin = json_num(json_at(dmin, i), 0);
+
+        if (i == 0) {
+            /* "2026-10-21T06:30" -> "06:30" */
+            const wchar_t *sr = json_str(json_at(dsr, 0), L"");
+            const wchar_t *ss = json_str(json_at(dss, 0), L"");
+            if (wcslen(sr) >= 16) swprintf(w->sunrise, 8, L"%.5s", sr + 11);
+            if (wcslen(ss) >= 16) swprintf(w->sunset, 8, L"%.5s", ss + 11);
+        }
         w->dcount++;
     }
 

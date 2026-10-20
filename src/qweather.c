@@ -159,6 +159,79 @@ static int qw_geocode(const wchar_t *q, wchar_t *loc, int loccap,
     return 1;
 }
 
+/* 新版空气质量接口没有 code 字段，单独走一个不做状态码校验的入口 */
+static JNode *qw_get_json(const wchar_t *url)
+{
+    wchar_t hdr[192];
+    swprintf(hdr, 192, L"X-QW-Api-Key: %s\r\n", g_api.key);
+
+    size_t len = 0;
+    char *raw = http_get_ex(url, hdr, &len, NULL, 0);
+    if (!raw) return NULL;
+
+    JNode *root = json_parse(raw, len);
+    http_free(raw);
+    return root;
+}
+
+/* 空气质量：优先取中国标准（cn-mee），没有就取第一个 */
+static void fill_air(Weather *w)
+{
+    wchar_t url[320];
+    swprintf(url, 320, L"https://%s/airquality/v1/current/%.2f/%.2f?lang=zh",
+             g_api.host, w->lat, w->lon);
+
+    JNode *root = qw_get_json(url);
+    if (!root) return;
+
+    const JNode *arr = json_obj(root, L"indexes");
+    const JNode *pick = NULL;
+    int n = json_count(arr);
+    for (int i = 0; i < n; i++) {
+        const JNode *it = json_at(arr, i);
+        const wchar_t *code = json_str(json_obj(it, L"code"), L"");
+        if (!wcscmp(code, L"cn-mee")) { pick = it; break; }
+    }
+    if (!pick) pick = json_at(arr, 0);
+    if (!pick) { json_free(root); return; }
+
+    w->has_aqi   = 1;
+    w->aqi       = jint(pick, L"aqi", 0);
+    w->aqi_level = jint(pick, L"level", 0);
+
+    const wchar_t *cat = json_str(json_obj(pick, L"category"), L"");
+    wcsncpy(w->aqi_cat, cat, 15);
+    w->aqi_cat[15] = 0;
+
+    const JNode *col = json_obj(pick, L"color");
+    if (col) {
+        int r = jint(col, L"red", 0);
+        int g = jint(col, L"green", 0);
+        int b = jint(col, L"blue", 0);
+        if (r || g || b) w->aqi_color = RGB(r, g, b);
+    }
+
+    json_free(root);
+}
+
+/* 分钟级降水（仅中国区，location 必须是 "经度,纬度"） */
+static void fill_minutely(Weather *w)
+{
+    wchar_t url[320];
+    swprintf(url, 320, L"https://%s/v7/minutely/5m?location=%.4f,%.4f&lang=zh",
+             g_api.host, w->lon, w->lat);
+
+    JNode *root = qw_call(url, NULL, 0);
+    if (!root) return;
+
+    const wchar_t *summary = json_str(json_obj(root, L"summary"), L"");
+    if (summary[0]) {
+        wcsncpy(w->minutely, summary, 47);
+        w->minutely[47] = 0;
+    }
+    json_free(root);
+}
+
 Weather *qweather_fetch(const Job *job, wchar_t *err, int errcap)
 {
     wchar_t loc[64] = L"";
@@ -250,10 +323,20 @@ Weather *qweather_fetch(const Job *job, wchar_t *err, int errcap)
             df->tmax = jnum(it, L"tempMax", 0);
             df->tmin = jnum(it, L"tempMin", 0);
             df->code = qw_icon_to_wmo(jint(it, L"iconDay", 100));
+
+            if (i == 0) {
+                wcsncpy(w->sunrise, json_str(json_obj(it, L"sunrise"), L""), 7);
+                wcsncpy(w->sunset,  json_str(json_obj(it, L"sunset"),  L""), 7);
+                w->sunrise[7] = 0;
+                w->sunset[7]  = 0;
+            }
             w->dcount++;
         }
         json_free(d);
     }
+
+    fill_air(w);        /* 以下是可选的附加数据，失败不影响主体 */
+    fill_minutely(w);
 
     return w;
 }

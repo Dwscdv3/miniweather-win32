@@ -747,7 +747,10 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, LPWSTR cmdline, int show)
     ShowWindow(g_hwnd, show);
     UpdateWindow(g_hwnd);
 
-    SetTimer(g_hwnd, 1, 10 * 60 * 1000, NULL);
+    /* 和风一轮刷新要 4 个请求（now/24h/7d/air），免费额度 1000 次/天；
+       15 分钟一轮 ≈ 384 次/天，给切城市留出余量 */
+    UINT interval = qweather_ready() ? 15u * 60u * 1000u : 10u * 60u * 1000u;
+    SetTimer(g_hwnd, 1, interval, NULL);
     refresh_active();
 
     MSG msg;

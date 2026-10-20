@@ -34,7 +34,7 @@ enum { ST_LOADING = 0, ST_READY = 1, ST_ERROR = 2 };
 
 /* 窗口逻辑尺寸（96 DPI） */
 #define WIN_W 460
-#define WIN_H 590
+#define WIN_H 614
 
 typedef struct {
     wchar_t weekday[12];
@@ -57,6 +57,20 @@ typedef struct {
     int     hhour[HOURS_MAX];       /* 每个点对应的本地小时 */
     int     dcount;
     DayForecast days[DAYS_MAX];
+
+    /* 空气质量（和风提供；Open-Meteo 回退时 has_aqi = 0） */
+    int      has_aqi;
+    int      aqi;
+    int      aqi_level;             /* 1 优 … 6 严重 */
+    COLORREF aqi_color;
+    wchar_t  aqi_cat[16];
+
+    /* 天文 */
+    wchar_t  sunrise[8];
+    wchar_t  sunset[8];
+
+    /* 分钟级降水摘要（和风中国区独有） */
+    wchar_t  minutely[48];
 } Weather;
 
 typedef struct {
