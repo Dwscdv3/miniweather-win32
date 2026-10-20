@@ -10,7 +10,8 @@
 #define FORECAST_URL \
     L"https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f" \
     L"&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day," \
-    L"weather_code,wind_speed_10m,wind_direction_10m,pressure_msl,precipitation" \
+    L"weather_code,wind_speed_10m,wind_direction_10m,pressure_msl,precipitation," \
+    L"visibility,cloud_cover" \
     L"&hourly=temperature_2m,precipitation_probability" \
     L"&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset" \
     L"&timezone=auto&forecast_days=7&wind_speed_unit=kmh"
@@ -164,6 +165,8 @@ static Weather *openmeteo_fetch(const Job *job, wchar_t *err, int errcap)
     w->wind_dir = (int)json_num(json_obj(cur, L"wind_direction_10m"), 0);
     w->pressure = json_num(json_obj(cur, L"pressure_msl"), 0);
     w->precip   = json_num(json_obj(cur, L"precipitation"), 0);
+    w->vis      = json_num(json_obj(cur, L"visibility"), 0) / 1000.0;   /* 米 -> 公里 */
+    w->cloud    = json_num(json_obj(cur, L"cloud_cover"), 0);
 
     const wchar_t *now = json_str(json_obj(cur, L"time"), L"");
     int curhour = time_hour(now);

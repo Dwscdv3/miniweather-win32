@@ -34,7 +34,7 @@ enum { ST_LOADING = 0, ST_READY = 1, ST_ERROR = 2 };
 
 /* 窗口逻辑尺寸（96 DPI） */
 #define WIN_W 460
-#define WIN_H 614
+#define WIN_H 668
 
 typedef struct {
     wchar_t weekday[12];
@@ -49,6 +49,7 @@ typedef struct {
     wchar_t desc[24];               /* 天气现象文案（和风直接给中文） */
     double  lat, lon;
     double  temp, feels, wind, pressure, precip;
+    double  vis, cloud;             /* 能见度 km / 云量 % */
     int     humidity, code, is_day, wind_dir;
     int     hstart;                 /* 起始本地小时 */
     int     hcount;

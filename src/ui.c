@@ -612,8 +612,24 @@ static void draw_stat(HDC dc, RECT r, const wchar_t *label, const wchar_t *value
     text(dc, value, vr, f_pill, vcol, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
-/* AQI 等级配色（接口没给 color 时兜底） */
-static COLORREF aqi_level_color(int level)
+/* 次要数据小卡片：更矮、字号更小，视觉上明显次于上面那排 */
+static void draw_mini(HDC dc, RECT r, const wchar_t *label, const wchar_t *value)
+{
+    fill_rr(dc, r, SZ(10), C_CARD);
+
+    RECT lr;
+    lr.left = r.left + SZ(10); lr.right = r.right - SZ(6);
+    lr.top = r.top + SZ(5); lr.bottom = r.top + SZ(17);
+    text(dc, label, lr, f_tiny, C_MUTED, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    RECT vr;
+    vr.left = r.left + SZ(10); vr.right = r.right - SZ(6);
+    vr.top = r.top + SZ(18); vr.bottom = r.bottom - SZ(4);
+    text(dc, value, vr, f_body, C_TEXT,
+         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
+
+/* AQI 等级配色（接口没给 color 时兜底） */static COLORREF aqi_level_color(int level)
 {
     switch (level) {
     case 1:  return RGB(0x4C, 0xD1, 0x37);   /* 优 */
@@ -822,6 +838,40 @@ void ui_paint(HDC target, int cw, int ch)
     }
     y += SZ(54) + SZ(12);
 
+    /* ---- 次要数据：气压 / 能见度 / 云量 / 降水量 ---- */
+    int g2  = SZ(10);
+    int pw2 = (w - g2 * 3) / 4;
+    for (int i = 0; i < 4; i++) {
+        RECT p;
+        p.left  = x + i * (pw2 + g2);
+        p.right = p.left + pw2;
+        p.top   = y;
+        p.bottom = y + SZ(42);
+
+        wchar_t lbl[16], val[24];
+        switch (i) {
+        case 0:
+            wcscpy(lbl, L"气压");
+            swprintf(val, 24, L"%.0f hPa", wd->pressure);
+            break;
+        case 1:
+            wcscpy(lbl, L"能见度");
+            if (wd->vis > 0) swprintf(val, 24, L"%.0f km", wd->vis);
+            else             wcscpy(val, L"—");
+            break;
+        case 2:
+            wcscpy(lbl, L"云量");
+            swprintf(val, 24, L"%.0f%%", wd->cloud);
+            break;
+        default:
+            wcscpy(lbl, L"降水量");
+            swprintf(val, 24, L"%.1f mm", wd->precip);
+            break;
+        }
+        draw_mini(dc, p, lbl, val);
+    }
+    y += SZ(42) + SZ(12);
+
     /* ---- 24 小时 ---- */
     RECT hcard;
     hcard.left = x; hcard.right = x + w;
@@ -833,14 +883,6 @@ void ui_paint(HDC target, int cw, int ch)
     htitle.top = hcard.top + SZ(8); htitle.bottom = hcard.top + SZ(22);
     text(dc, L"未来 24 小时", htitle, f_tiny, C_MUTED,
          DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-    /* 气压降级放到这里：小字、右对齐，不抢视觉重心 */
-    if (wd->has_aqi) {
-        wchar_t pb[32];
-        swprintf(pb, 32, L"气压 %.0f hPa", wd->pressure);
-        text(dc, pb, htitle, f_tiny, C_MUTED,
-             DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-    }
 
     if (wd->hcount > 1) {
         RECT hplot;

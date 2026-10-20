@@ -269,6 +269,8 @@ Weather *qweather_fetch(const Job *job, wchar_t *err, int errcap)
     w->wind_dir = jint(n, L"wind360", 0);
     w->pressure = jnum(n, L"pressure", 0);
     w->precip   = jnum(n, L"precip", 0);
+    w->vis      = jnum(n, L"vis", 0);       /* 公里 */
+    w->cloud    = jint(n, L"cloud", 0);     /* 百分比 */
 
     int icon = jint(n, L"icon", 100);
     w->code = qw_icon_to_wmo(icon);
