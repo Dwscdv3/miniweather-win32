@@ -144,3 +144,8 @@ HKEY_CURRENT_USER\Software\MiniWeather
 - 窗口固定尺寸，不支持拖拽缩放
 - 城市名较长且数量到上限时，标签文字会自动省略
 - 网络走系统代理设置，需要能访问 `api.open-meteo.com`
+
+## 许可
+
+[MIT](LICENSE)
+

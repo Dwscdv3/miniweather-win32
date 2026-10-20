@@ -78,7 +78,7 @@ GET .../search?name=朝阳区 ...
 
 建议的落地方式：
 
-- Key 存注册表 `HKCU\Software\MiniWeather\ApiKey`（和城市列表同处）；
+- Key 存注册表 `HKCU\Software\MiniWeather\QwKey`、Host 存 `QwHost`（和城市列表同处）；
 - 有 Key 走和风，没有 Key 自动回退 Open-Meteo —— 保持"开箱即用、不填 Key 也能跑"的体验；
 - 和风的 WMO 与国内天气现象编码不同，`wmo_text()` 需要加一张映射表。
 
