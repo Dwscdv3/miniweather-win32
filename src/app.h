@@ -85,6 +85,7 @@ typedef struct {
     int      hover_close;
     int      hover_add;
     int      hover_refresh;
+    int      drag_idx;              /* 正在拖拽排序的标签（-1 表示无） */
 } AppState;
 
 extern AppState g_app;

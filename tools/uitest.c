@@ -68,6 +68,25 @@ static int cmd_hover_real(HWND h, int x, int y)
     return 0;
 }
 
+static int cmd_drag(HWND h, int x1, int y1, int x2, int y2)
+{
+    PostMessageW(h, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x1, y1));
+    Sleep(120);
+
+    const int steps = 12;
+    for (int i = 1; i <= steps; i++) {
+        int x = x1 + (x2 - x1) * i / steps;
+        int y = y1 + (y2 - y1) * i / steps;
+        PostMessageW(h, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x, y));
+        Sleep(40);
+    }
+
+    PostMessageW(h, WM_LBUTTONUP, 0, MAKELPARAM(x2, y2));
+    Sleep(800);
+    printf("OK: drag %d,%d -> %d,%d\n", x1, y1, x2, y2);
+    return 0;
+}
+
 int wmain(int argc, wchar_t **argv)
 {
     g_h = FindWindowW(L"MiniWeatherWnd", NULL);
@@ -97,6 +116,9 @@ int wmain(int argc, wchar_t **argv)
     if (!wcscmp(cmd, L"click") && argc > 3)
         return cmd_click(g_h, _wtoi(argv[2]), _wtoi(argv[3]));
 
-    printf("usage: uitest add <city> | refresh | hover <x> <y> | hoverreal <x> <y> | click <x> <y>\n");
+    if (!wcscmp(cmd, L"drag") && argc > 5)
+        return cmd_drag(g_h, _wtoi(argv[2]), _wtoi(argv[3]), _wtoi(argv[4]), _wtoi(argv[5]));
+
+    printf("usage: uitest add <city> | refresh | hover <x> <y> | hoverreal <x> <y> | click <x> <y> | drag <x1> <y1> <x2> <y2>\n");
     return 2;
 }

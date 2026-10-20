@@ -126,18 +126,21 @@ static void fill_circle(HDC dc, int cx, int cy, int r, COLORREF c)
     DeleteObject(br);
 }
 
+/* 用矩形填充画十字，保证横竖两笔严格对称、像素对齐（用 LineTo 会因笔宽取整而偏） */
 static void plus_px(HDC dc, int cx, int cy, int arm, int thick, COLORREF c)
 {
-    HPEN pen = CreatePen(PS_SOLID, thick, c);
-    HGDIOBJ op = SelectObject(dc, pen);
+    int t = thick < 1 ? 1 : thick;
+    int h0 = cy - t / 2;
+    int v0 = cx - t / 2;
 
-    MoveToEx(dc, cx - arm, cy, NULL);
-    LineTo(dc, cx + arm + 1, cy);
-    MoveToEx(dc, cx, cy - arm, NULL);
-    LineTo(dc, cx, cy + arm + 1);
+    /* 按实际像素比对微调：横线左移 1px、右端再延长 1px；竖线上移 1px、下端再延长 1px */
+    RECT h = { cx - arm - 1, h0, cx + arm + 1, h0 + t };
+    RECT v = { v0, cy - arm - 1, v0 + t, cy + arm + 1 };
 
-    SelectObject(dc, op);
-    DeleteObject(pen);
+    HBRUSH br = CreateSolidBrush(c);
+    FillRect(dc, &h, br);
+    FillRect(dc, &v, br);
+    DeleteObject(br);
 }
 
 /* ---------------- 顶部布局 ---------------- */
@@ -493,13 +496,12 @@ static void draw_hourly(HDC dc, RECT r)
 
         wchar_t h[16];
         swprintf(h, 16, L"%d时", (w->hstart + i) % 24);
+        /* 始终以刻度点为中心，允许文字伸进卡片内边距，避免首尾标签被推歪 */
         RECT tr;
         tr.left   = pts[i].x - SZ(20);
         tr.right  = pts[i].x + SZ(20);
         tr.top    = r.bottom - SZ(1);
         tr.bottom = r.bottom + SZ(13);
-        if (tr.left < r.left) { tr.left = pts[i].x; tr.right = pts[i].x + SZ(40); }
-        if (tr.right > r.right) { tr.left = pts[i].x - SZ(40); tr.right = pts[i].x; }
         text(dc, h, tr, f_tiny, C_MUTED, DT_CENTER | DT_TOP | DT_SINGLELINE);
     }
 
@@ -635,12 +637,16 @@ static void center_note(HDC dc, int cw, int ch, const wchar_t *a, const wchar_t 
 
 static void draw_tabbar(HDC dc, const UiLayout *L, int cw)
 {
+    int dragging = (g_app.drag_idx >= 0);
+
     for (int i = 0; i < L->ntab; i++) {
         int act = (i == g_app.active);
         int hov = (g_app.hover_tab == i);
+        int drg = (i == g_app.drag_idx);
 
-        if (act)          fill_rr(dc, L->tabs[i], SZ(9), C_CARD2);
-        else if (hov)     fill_rr(dc, L->tabs[i], SZ(9), C_CARD);
+        if (act)           fill_rr(dc, L->tabs[i], SZ(9), C_CARD2);
+        else if (drg)      fill_rr(dc, L->tabs[i], SZ(9), C_LINE);
+        else if (hov)      fill_rr(dc, L->tabs[i], SZ(9), C_CARD);
 
         wchar_t s[96];
         city_short(g_app.cities[i].full, s, 96);
@@ -650,21 +656,22 @@ static void draw_tabbar(HDC dc, const UiLayout *L, int cw)
         int ins = SZ(8) + (g_app.count > 1 ? SZ(13) / 2 : 0);
         tr.left  += ins;
         tr.right -= ins;
-        text(dc, s, tr, f_tab, (act || hov) ? C_TEXT : C_MUTED,
+        text(dc, s, tr, f_tab, (act || hov || drg) ? C_TEXT : C_MUTED,
              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-        if (g_app.count > 1 && hov) {
+        if (!dragging && g_app.count > 1 && hov) {
             text(dc, L"×", L->close[i], f_tab,
                  (g_app.hover_close == i) ? C_ERR : C_MUTED,
                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
     }
 
-    /* ＋ 添加城市：圆形按钮，加号用线条画保证居中 */
+    /* ＋ 添加城市：正圆按钮，加号用矩形块绘制保证横竖对齐 */
     int ad = L->add.right - L->add.left;
-    fill_rr(dc, L->add, ad / 2, g_app.hover_add ? C_CARD2 : C_CARD);
-    plus_px(dc, (L->add.left + L->add.right) / 2, (L->add.top + L->add.bottom) / 2,
-            SZ(5), SZ(2), g_app.hover_add ? C_TEXT : C_MUTED);
+    int acx = (L->add.left + L->add.right) / 2;
+    int acy = (L->add.top + L->add.bottom) / 2;
+    fill_circle(dc, acx, acy, ad / 2, g_app.hover_add ? C_CARD2 : C_CARD);
+    plus_px(dc, acx, acy, SZ(5), SZ(2), g_app.hover_add ? C_TEXT : C_MUTED);
 
     /* 更新时间 + 刷新按钮 */
     int x0 = L->ntab > 0 ? L->add.right : L->row.left;

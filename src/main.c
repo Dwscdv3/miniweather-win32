@@ -18,6 +18,14 @@ static WNDPROC g_edit_old;
 static int     g_job_mode;          /* 当前后台任务的类型 */
 static wchar_t g_pending_query[96]; /* 忙时提交的城市，等当前任务结束后再查 */
 
+/* 鼠标按下状态：用来区分“点击”和“拖拽排序” */
+static struct {
+    int   hit;
+    int   idx;
+    POINT pt;
+    int   dragging;
+} g_press;
+
 /* ---------------- 常用城市 ---------------- */
 
 static void save_store(void)
@@ -175,6 +183,49 @@ static void delete_city(int idx)
         g_app.state = ST_LOADING;
         refresh_active();
     }
+}
+
+/* 拖拽排序：把 from 位置的标签移到 to 位置，当前选中项跟着走 */
+static void reorder_city(int from, int to)
+{
+    if (from == to || from < 0 || to < 0) return;
+    if (from >= g_app.count || to >= g_app.count) return;
+
+    City tmp = g_app.cities[from];
+
+    if (from < to) {
+        memmove(&g_app.cities[from], &g_app.cities[from + 1],
+                (size_t)(to - from) * sizeof(City));
+        if (g_app.active == from)            g_app.active = to;
+        else if (g_app.active > from && g_app.active <= to) g_app.active--;
+    } else {
+        memmove(&g_app.cities[to + 1], &g_app.cities[to],
+                (size_t)(from - to) * sizeof(City));
+        if (g_app.active == from)            g_app.active = to;
+        else if (g_app.active >= to && g_app.active < from) g_app.active++;
+    }
+    g_app.cities[to] = tmp;
+
+    save_store();
+}
+
+/* 拖拽时按最近的标签中心决定落点 */
+static int tab_at_x(int x)
+{
+    RECT rc;
+    GetClientRect(g_hwnd, &rc);
+    UiLayout L;
+    ui_layout(rc.right, &L);
+    if (L.ntab <= 0) return -1;
+
+    int best = 0;
+    int bestd = -1;
+    for (int i = 0; i < L.ntab; i++) {
+        int cx = (L.tabs[i].left + L.tabs[i].right) / 2;
+        int d = cx > x ? cx - x : x - cx;
+        if (bestd < 0 || d < bestd) { bestd = d; best = i; }
+    }
+    return best;
 }
 
 /* ---------------- 命中测试 ---------------- */
@@ -377,10 +428,47 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         InvalidateRect(h, NULL, FALSE);
         return 0;
 
+    case WM_LBUTTONDOWN: {
+        POINT pt;
+        pt.x = GET_X_LPARAM(lp);
+        pt.y = GET_Y_LPARAM(lp);
+
+        int idx = -1;
+        g_press.hit      = hit_test(pt, &idx);
+        g_press.idx      = idx;
+        g_press.pt       = pt;
+        g_press.dragging = 0;
+
+        if (g_press.hit == HIT_TAB) SetCapture(h);   /* 有拖拽可能 */
+        return 0;
+    }
+
     case WM_MOUSEMOVE: {
         POINT pt;
         pt.x = GET_X_LPARAM(lp);
         pt.y = GET_Y_LPARAM(lp);
+
+        if (GetCapture() == h && g_press.hit == HIT_TAB && g_app.count > 1) {
+            if (!g_press.dragging) {
+                int dx = pt.x - g_press.pt.x;
+                int dy = pt.y - g_press.pt.y;
+                if (dx > MZ(4) || dx < -MZ(4) || dy > MZ(10) || dy < -MZ(10)) {
+                    g_press.dragging = 1;
+                    g_app.drag_idx   = g_press.idx;
+                    InvalidateRect(h, NULL, FALSE);
+                }
+            }
+            if (g_press.dragging) {
+                int target = tab_at_x(pt.x);
+                if (target >= 0 && target != g_app.drag_idx) {
+                    reorder_city(g_app.drag_idx, target);
+                    g_app.drag_idx = target;
+                    InvalidateRect(h, NULL, FALSE);
+                }
+                return 0;
+            }
+        }
+
         set_hover(pt);
 
         TRACKMOUSEEVENT tme;
@@ -391,6 +479,15 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         TrackMouseEvent(&tme);
         return 0;
     }
+
+    case WM_CAPTURECHANGED:
+        if (g_press.dragging) {
+            g_press.dragging = 0;
+            g_app.drag_idx   = -1;
+            InvalidateRect(h, NULL, FALSE);
+        }
+        g_press.hit = HIT_NONE;
+        return 0;
 
     case WM_MOUSELEAVE:
         clear_hover();
@@ -412,6 +509,16 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         POINT pt;
         pt.x = GET_X_LPARAM(lp);
         pt.y = GET_Y_LPARAM(lp);
+
+        if (g_press.dragging) {                 /* 拖拽结束，吞掉这次点击 */
+            g_press.dragging = 0;
+            g_app.drag_idx   = -1;
+            if (GetCapture() == h) ReleaseCapture();
+            InvalidateRect(h, NULL, FALSE);
+            return 0;
+        }
+        if (GetCapture() == h) ReleaseCapture();
+        g_press.hit = HIT_NONE;
 
         int idx = -1;
         switch (hit_test(pt, &idx)) {
@@ -562,6 +669,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, LPWSTR cmdline, int show)
     cities_init();
     g_app.hover_tab   = -1;      /* 0 是合法标签下标，必须显式初始化 */
     g_app.hover_close = -1;
+    g_app.drag_idx    = -1;
     ui_init();
 
     WNDCLASSEXW wc;
