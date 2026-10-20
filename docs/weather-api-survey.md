@@ -97,3 +97,33 @@ GET .../search?name=朝阳区 ...
   （表现为 Open-Meteo 那条链路报 `读取数据失败（2147500036）` = `E_ABORT`）。
   最终自己实现了 gzip/deflate 解压（`src/gunzip.c`，约 300 行，RFC 1951/1952），
   请求时仍然优先声明 `identity`，只有服务端强行压缩时才本地解，两条链路互不影响。
+
+## 六、和风比 Open-Meteo 多出什么（本 Key 实测）
+
+| 数据 | 和风接口 | 本 Key 实测 | Open-Meteo 对照 |
+| --- | --- | --- | --- |
+| 实况 / 逐小时 / 7 天 | `/v7/weather/now|24h|7d` | ✅ | ✅ |
+| **中国标准 AQI + 污染物** | `/airquality/v1/current/{lat}/{lon}` | ✅ 返回 cn-mee 指数、PM2.5/PM10/NO2/O3/CO、健康建议 | 只有 us_aqi / european_aqi（另一域名，需单独取） |
+| **分钟级降水（2h / 5min）** | `/v7/minutely/5m?location=lon,lat` | ✅ 带中文摘要「未来两小时无降水」 | 有 15 分钟粒度（minutely_15） |
+| 日出日落 | 含在 `/v7/weather/7d` 的 daily 里 | ✅ | ✅（`daily=sunrise,sunset`） |
+| 生活指数（穿衣/洗车/紫外线…） | `/v7/indices/1d` | ❌ 403 Security Restriction | ❌ |
+| 灾害预警 | `weatheralert/v1/current/{lat}/{lon}` | ❌ 403 Security Restriction | ❌ |
+| 月相 / 月出月落 | `/v7/astronomy/*` | ❌ 403 Security Restriction | ❌ |
+| 历史天气 | `/v7/historical/weather` | ✅ | ✅ |
+| 台风 / 潮汐 / 太阳辐射 | `/v7/tropical/*`、`/v7/ocean/tide`、solar | 未开通 | ❌ |
+
+注意：**`/v7/air/now`、`/v7/air/5d`、`/v7/warning/now` 已标记 Deprecated（403）**，
+空气质量与预警必须走新版路径 `/airquality/v1/...`、`/weatheralert/v1/...`，
+其中空气质量用 API Key 即可，但预警、生活指数、天文不在免费订阅内。
+
+### 已经加到界面上的
+
+- **空气质量** → 第三张指标卡（原来放气压），AQI 数值按等级着色（接口给了 color 就直接用，没给按 6 级兜底色）
+- **气压** → 降级为 24 小时卡片右上角的小字（10px、灰色）
+- **日出日落** → 7 天卡片的小标题右侧
+- **分钟级降水摘要** → 底栏状态行，例如「20分钟后开始下小雨，85分钟后就停了」
+
+### 额度账
+
+和风一轮完整刷新是 5 个请求（now / 24h / 7d / air / minutely），所以接和风后自动刷新间隔
+从 10 分钟调到 15 分钟：96 × 5 = 480 次/天，免费额度 1000 次/天，剩下的留给切城市（每次切城市 5 次）。
