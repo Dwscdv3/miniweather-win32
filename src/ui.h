@@ -18,6 +18,7 @@ void   ui_free(void);
 void   ui_fonts_recreate(void);
 void   ui_layout(int cw, UiLayout *out);
 void   ui_paint(HDC hdc, int cw, int ch);
+int    ui_chart_hit(int cw, POINT pt);   /* 返回图表标签下标，未命中 -1 */
 HBRUSH ui_edit_brush(void);
 HFONT  ui_edit_font(void);
 

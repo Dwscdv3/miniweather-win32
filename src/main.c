@@ -270,7 +270,7 @@ static int tab_at_x(int x)
 
 /* ---------------- 命中测试 ---------------- */
 
-enum { HIT_NONE = 0, HIT_TAB, HIT_CLOSE, HIT_ADD, HIT_REFRESH };
+enum { HIT_NONE = 0, HIT_TAB, HIT_CLOSE, HIT_ADD, HIT_REFRESH, HIT_CHART };
 
 static int hit_test(POINT pt, int *idx)
 {
@@ -293,6 +293,12 @@ static int hit_test(POINT pt, int *idx)
     }
     if (PtInRect(&L.add, pt)) return HIT_ADD;
     if (!g_app.busy && PtInRect(&L.refresh, pt)) return HIT_REFRESH;
+
+    int ci = ui_chart_hit(rc.right, pt);
+    if (ci >= 0) {
+        if (idx) *idx = ci;
+        return HIT_CHART;
+    }
     return HIT_NONE;
 }
 
@@ -305,13 +311,16 @@ static void set_hover(POINT pt)
     int hc = (hit == HIT_CLOSE) ? idx : -1;
     int ha = (hit == HIT_ADD) ? 1 : 0;
     int hr = (hit == HIT_REFRESH) ? 1 : 0;
+    int hg = (hit == HIT_CHART) ? idx : -1;
 
     if (ht != g_app.hover_tab || hc != g_app.hover_close ||
-        ha != g_app.hover_add || hr != g_app.hover_refresh) {
+        ha != g_app.hover_add || hr != g_app.hover_refresh ||
+        hg != g_app.hover_chart) {
         g_app.hover_tab     = ht;
         g_app.hover_close   = hc;
         g_app.hover_add     = ha;
         g_app.hover_refresh = hr;
+        g_app.hover_chart   = hg;
         InvalidateRect(g_hwnd, NULL, FALSE);
     }
 }
@@ -319,9 +328,10 @@ static void set_hover(POINT pt)
 static void clear_hover(void)
 {
     if (g_app.hover_tab < 0 && g_app.hover_close < 0 &&
-        !g_app.hover_add && !g_app.hover_refresh) return;
+        !g_app.hover_add && !g_app.hover_refresh && g_app.hover_chart < 0) return;
 
     g_app.hover_tab = g_app.hover_close = -1;
+    g_app.hover_chart = -1;
     g_app.hover_add = g_app.hover_refresh = 0;
     InvalidateRect(g_hwnd, NULL, FALSE);
 }
@@ -566,6 +576,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         case HIT_TAB:     activate_city(idx); break;
         case HIT_ADD:     show_city_edit(); break;
         case HIT_REFRESH: refresh_active(); break;
+        case HIT_CHART:   g_app.chart_tab = (idx == 1) ? 1 : 0;
+                          InvalidateRect(h, NULL, FALSE);
+                          break;
         default: break;
         }
         return 0;
@@ -710,7 +723,9 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, LPWSTR cmdline, int show)
     cities_init();
     g_app.hover_tab   = -1;      /* 0 是合法标签下标，必须显式初始化 */
     g_app.hover_close = -1;
+    g_app.hover_chart = -1;
     g_app.drag_idx    = -1;
+    g_app.chart_tab   = 0;
     ui_init();
 
     WNDCLASSEXW wc;

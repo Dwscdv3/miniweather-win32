@@ -34,7 +34,7 @@ enum { ST_LOADING = 0, ST_READY = 1, ST_ERROR = 2 };
 
 /* 窗口逻辑尺寸（96 DPI） */
 #define WIN_W 460
-#define WIN_H 668
+#define WIN_H 694
 
 typedef struct {
     wchar_t weekday[12];
@@ -55,6 +55,7 @@ typedef struct {
     int     hcount;
     double  htemp[HOURS_MAX];
     int     hpop[HOURS_MAX];
+    double  hprecip[HOURS_MAX];     /* 逐小时降水量 mm */
     int     hhour[HOURS_MAX];       /* 每个点对应的本地小时 */
     int     dcount;
     DayForecast days[DAYS_MAX];
@@ -102,7 +103,9 @@ typedef struct {
     int      hover_close;
     int      hover_add;
     int      hover_refresh;
+    int      hover_chart;           /* 图表标签悬停（-1/0/1） */
     int      drag_idx;              /* 正在拖拽排序的标签（-1 表示无） */
+    int      chart_tab;             /* 0 = 温度，1 = 降水量 */
 } AppState;
 
 extern AppState g_app;

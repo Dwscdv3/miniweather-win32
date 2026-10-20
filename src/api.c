@@ -12,7 +12,7 @@
     L"&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day," \
     L"weather_code,wind_speed_10m,wind_direction_10m,pressure_msl,precipitation," \
     L"visibility,cloud_cover" \
-    L"&hourly=temperature_2m,precipitation_probability" \
+    L"&hourly=temperature_2m,precipitation_probability,precipitation" \
     L"&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset" \
     L"&timezone=auto&forecast_days=7&wind_speed_unit=kmh"
 
@@ -182,6 +182,7 @@ static Weather *openmeteo_fetch(const Job *job, wchar_t *err, int errcap)
     JNode *htime = json_obj(hl, L"time");
     JNode *htemp = json_obj(hl, L"temperature_2m");
     JNode *hpop  = json_obj(hl, L"precipitation_probability");
+    JNode *hpr   = json_obj(hl, L"precipitation");
     int hn = json_count(htime);
 
     int start = 0;
@@ -191,9 +192,10 @@ static Weather *openmeteo_fetch(const Job *job, wchar_t *err, int errcap)
 
     int c = 0;
     for (int i = start; i < hn && c < HOURS_MAX; i++, c++) {
-        w->htemp[c] = json_num(json_at(htemp, i), 0);
-        w->hpop[c]  = (int)json_num(json_at(hpop, i), 0);
-        w->hhour[c] = time_hour(json_str(json_at(htime, i), L""));
+        w->htemp[c]   = json_num(json_at(htemp, i), 0);
+        w->hpop[c]    = (int)json_num(json_at(hpop, i), 0);
+        w->hprecip[c] = json_num(json_at(hpr, i), 0);
+        w->hhour[c]   = time_hour(json_str(json_at(htime, i), L""));
     }
     w->hcount = c;
     w->hstart = curhour;

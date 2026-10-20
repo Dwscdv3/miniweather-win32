@@ -303,6 +303,7 @@ Weather *qweather_fetch(const Job *job, wchar_t *err, int errcap)
             const JNode *it = json_at(arr, i);
             w->htemp[c] = jnum(it, L"temp", 0);
             w->hpop[c]  = jint(it, L"pop", 0);
+            w->hprecip[c] = jnum(it, L"precip", 0);
             w->hhour[c] = time_hour(json_str(json_obj(it, L"fxTime"), L""));
             c++;
         }

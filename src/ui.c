@@ -254,6 +254,56 @@ void ui_layout(int cw, UiLayout *L)
     L->add.bottom = top + h;
 }
 
+/* ---------------- 24 小时卡片几何（绘制与命中检测共用） ---------------- */
+
+/* 卡片位置由上方各块的固定高度累加得出，改布局时这里要同步 */
+static void chart_geom(int cw, RECT *card)
+{
+    const int PAD = SZ(20);
+    int x = PAD;
+    int w = cw - PAD * 2;
+
+    int y = SZ(14) + SZ(30) + SZ(12);   /* 标签栏 */
+    y += SZ(122);                       /* 主温度 */
+    y += SZ(54) + SZ(12);               /* 主指标 */
+    y += SZ(42) + SZ(12);               /* 次要数据 */
+
+    card->left = x;
+    card->right = x + w;
+    card->top = y;
+    card->bottom = y + SZ(126);
+}
+
+static void chart_tabs_geom(const RECT *card, RECT t[2])
+{
+    int th = SZ(18);
+    int ty = card->top + SZ(7);
+
+    int w2 = text_w(f_tiny, L"降水量") + SZ(16);
+    int w1 = text_w(f_tiny, L"温度") + SZ(16);
+
+    t[1].right = card->right - SZ(12);
+    t[1].left  = t[1].right - w2;
+    t[0].right = t[1].left - SZ(4);
+    t[0].left  = t[0].right - w1;
+
+    for (int i = 0; i < 2; i++) {
+        t[i].top = ty;
+        t[i].bottom = ty + th;
+    }
+}
+
+int ui_chart_hit(int cw, POINT pt)
+{
+    RECT card, t[2];
+    chart_geom(cw, &card);
+    chart_tabs_geom(&card, t);
+
+    for (int i = 0; i < 2; i++)
+        if (PtInRect(&t[i], pt)) return i;
+    return -1;
+}
+
 /* ---------------- 天气图标 ---------------- */
 
 typedef struct { int x, y, w, h; } IBox;
@@ -451,99 +501,169 @@ static COLORREF temp_color(double t)
     return C_ACCENT;
 }
 
-static void draw_hourly(HDC dc, RECT r)
+static double nice_step(double raw)
+{
+    if (raw <= 0) return 1;
+    double e = 1;
+    while (raw >= 10) { raw /= 10; e *= 10; }
+    while (raw < 1)   { raw *= 10; e /= 10; }
+    double s = raw <= 1 ? 1 : (raw <= 2 ? 2 : (raw <= 5 ? 5 : 10));
+    return s * e;
+}
+
+static void hline(HDC dc, int x1, int x2, int y, COLORREF c)
+{
+    HPEN pen = CreatePen(PS_SOLID, 1, c);
+    HGDIOBJ op = SelectObject(dc, pen);
+    MoveToEx(dc, x1, y, NULL);
+    LineTo(dc, x2 + 1, y);
+    SelectObject(dc, op);
+    DeleteObject(pen);
+}
+
+/* mode: 0 = 温度曲线，1 = 逐小时降水量 */
+static void draw_hourly(HDC dc, RECT r, int mode)
 {
     const Weather *w = g_app.w;
     int n = w ? w->hcount : 0;
     if (n < 2) return;
 
-    double mn = w->htemp[0], mx = w->htemp[0];
-    for (int i = 1; i < n; i++) {
-        if (w->htemp[i] < mn) mn = w->htemp[i];
-        if (w->htemp[i] > mx) mx = w->htemp[i];
-    }
-    if (mx - mn < 3.0) {
-        double c = (mx + mn) * 0.5;
-        mn = c - 1.5;
-        mx = c + 1.5;
-    }
-    double pad = (mx - mn) * 0.20;
-    mn -= pad;
-    mx += pad;
+    RECT plot;
+    plot.left   = r.left + SZ(30);      /* 左侧 Y 轴标签列 */
+    plot.right  = r.right;
+    plot.top    = r.top;
+    plot.bottom = r.bottom;
+    if (plot.right - plot.left < SZ(40)) return;
 
-    int step = (r.right - r.left) / (n - 1);
+    int step = (plot.right - plot.left) / (n - 1);
     if (step < 1) step = 1;
 
+    /* Y 轴范围 */
+    double lo = 0, hi = 1, stepv = 1;
+    if (mode == 0) {
+        double mn = w->htemp[0], mx = w->htemp[0];
+        for (int i = 1; i < n; i++) {
+            if (w->htemp[i] < mn) mn = w->htemp[i];
+            if (w->htemp[i] > mx) mx = w->htemp[i];
+        }
+        if (mx - mn < 3.0) { double c = (mx + mn) * 0.5; mn = c - 1.5; mx = c + 1.5; }
+
+        stepv = nice_step((mx - mn) / 2.0);
+        lo = floor(mn / stepv) * stepv;
+        hi = lo + stepv * 2;
+        while (hi < mx) { lo += stepv; hi += stepv; }
+    } else {
+        double mx = 0;
+        for (int i = 0; i < n; i++) if (w->hprecip[i] > mx) mx = w->hprecip[i];
+        stepv = 0.5;
+        while (stepv * 2 < mx) stepv *= 2;
+        lo = 0;
+        hi = stepv * 2;
+    }
+
+    int top = plot.top;
+    int bot = plot.bottom;
+
+    /* 温度曲线：先铺曲线下方淡色填充 */
     POINT pts[HOURS_MAX];
-    int top = r.top + SZ(4);
-    int bot = r.bottom - SZ(4);
-    for (int i = 0; i < n; i++) {
-        double k = (w->htemp[i] - mn) / (mx - mn);
-        pts[i].x = r.left + step * i;
-        pts[i].y = bot - (LONG)lround(k * (bot - top));
+    if (mode == 0) {
+        for (int i = 0; i < n; i++) {
+            double k = (w->htemp[i] - lo) / (hi - lo);
+            if (k < 0) k = 0;
+            if (k > 1) k = 1;
+            pts[i].x = plot.left + step * i;
+            pts[i].y = bot - (LONG)lround(k * (bot - top));
+        }
+
+        POINT poly[HOURS_MAX + 2];
+        for (int i = 0; i < n; i++) poly[i] = pts[i];
+        poly[n].x = pts[n - 1].x; poly[n].y = bot;
+        poly[n + 1].x = pts[0].x; poly[n + 1].y = bot;
+
+        HBRUSH ab = CreateSolidBrush(RGB(0x17, 0x2B, 0x3E));
+        HGDIOBJ ob = SelectObject(dc, ab);
+        HGDIOBJ op = SelectObject(dc, GetStockObject(NULL_PEN));
+        Polygon(dc, poly, n + 2);
+        SelectObject(dc, ob);
+        SelectObject(dc, op);
+        DeleteObject(ab);
     }
 
-    /* 曲线下方淡色填充 */
-    POINT poly[HOURS_MAX + 2];
-    for (int i = 0; i < n; i++) poly[i] = pts[i];
-    poly[n].x = pts[n - 1].x;
-    poly[n].y = bot + SZ(2);
-    poly[n + 1].x = pts[0].x;
-    poly[n + 1].y = bot + SZ(2);
+    /* 横向网格线 + Y 轴标签（画在填充之上） */
+    for (int i = 0; i < 3; i++) {
+        double v = hi - stepv * i;
+        int gy = bot - (int)lround((v - lo) / (hi - lo) * (bot - top));
 
-    HBRUSH ab = CreateSolidBrush(RGB(0x17, 0x2B, 0x3E));
-    HGDIOBJ ob = SelectObject(dc, ab);
-    HGDIOBJ op = SelectObject(dc, GetStockObject(NULL_PEN));
-    Polygon(dc, poly, n + 2);
-    SelectObject(dc, ob);
-    SelectObject(dc, op);
-    DeleteObject(ab);
+        hline(dc, plot.left, plot.right, gy, RGB(0x26, 0x2F, 0x3A));
 
-    /* 降水概率柱（画在曲线之下、面积之上） */
-    int bw = step / 2;
-    if (bw < SZ(2)) bw = SZ(2);
-    for (int i = 0; i < n; i++) {
-        int pop = w->hpop[i];
-        if (pop < 5) continue;
+        wchar_t lb[16];
+        if (mode == 0) swprintf(lb, 16, L"%.0f°", v);
+        else           swprintf(lb, 16, L"%.1f", v);
 
-        int hgt = (int)lround((bot - top) * (pop / 100.0));
-        if (hgt < SZ(2)) hgt = SZ(2);
-
-        RECT pr;
-        pr.left   = pts[i].x - bw / 2;
-        pr.right  = pr.left + bw;
-        pr.top    = bot + SZ(2) - hgt;
-        pr.bottom = bot + SZ(2);
-        fill_rr(dc, pr, bw / 2, RGB(0x2A, 0x4E, 0x6E));
+        RECT lr;
+        lr.left = r.left; lr.right = plot.left - SZ(5);
+        lr.top = gy - SZ(7); lr.bottom = gy + SZ(7);
+        text(dc, lb, lr, f_tiny, C_MUTED, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
     }
 
-    /* 折线 */
-    HPEN pen = CreatePen(PS_SOLID, SZ(2), C_ACCENT);
-    HGDIOBJ opn = SelectObject(dc, pen);
-    HGDIOBJ obr = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    Polyline(dc, pts, n);
-    SelectObject(dc, opn);
-    SelectObject(dc, obr);
-    DeleteObject(pen);
+    if (mode == 0) {
+        HPEN pen = CreatePen(PS_SOLID, SZ(2), C_ACCENT);
+        HGDIOBJ opn = SelectObject(dc, pen);
+        HGDIOBJ obr = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        Polyline(dc, pts, n);
+        SelectObject(dc, opn);
+        SelectObject(dc, obr);
+        DeleteObject(pen);
 
-    /* 节点 + 时间刻度 */
+        for (int i = 0; i < n; i += 3)
+            fill_circle(dc, pts[i].x, pts[i].y, SZ(2), C_ACCENT);
+
+        /* 当前点标记 */
+        fill_circle(dc, pts[0].x, pts[0].y, SZ(4), C_TEXT);
+        fill_circle(dc, pts[0].x, pts[0].y, SZ(2), C_ACCENT);
+    } else {
+        double mx = 0;
+        for (int i = 0; i < n; i++) if (w->hprecip[i] > mx) mx = w->hprecip[i];
+
+        int bw = step * 3 / 5;
+        if (bw < SZ(3)) bw = SZ(3);
+
+        for (int i = 0; i < n; i++) {
+            if (w->hprecip[i] <= 0.001) continue;
+
+            int hgt = (int)lround(w->hprecip[i] / (hi - lo) * (bot - top));
+            if (hgt < SZ(2)) hgt = SZ(2);
+
+            RECT pr;
+            pr.left   = plot.left + step * i - bw / 2;
+            pr.right  = pr.left + bw;
+            pr.top    = bot - hgt;
+            pr.bottom = bot;
+            fill_rr(dc, pr, bw / 2, C_ACCENT);
+        }
+
+        if (mx < 0.05) {
+            RECT nr;
+            nr.left = plot.left; nr.right = plot.right;
+            nr.top = (plot.top + plot.bottom) / 2 - SZ(8);
+            nr.bottom = nr.top + SZ(16);
+            text(dc, L"未来 24 小时无降水", nr, f_small, C_MUTED,
+                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+    }
+
+    /* 时间刻度 */
     for (int i = 0; i < n; i += 3) {
-        fill_circle(dc, pts[i].x, pts[i].y, SZ(2), C_ACCENT);
-
         wchar_t h[16];
         swprintf(h, 16, L"%d时", w->hhour[i]);
-        /* 始终以刻度点为中心，允许文字伸进卡片内边距，避免首尾标签被推歪 */
+
         RECT tr;
-        tr.left   = pts[i].x - SZ(20);
-        tr.right  = pts[i].x + SZ(20);
+        tr.left   = plot.left + step * i - SZ(20);
+        tr.right  = plot.left + step * i + SZ(20);
         tr.top    = r.bottom - SZ(1);
         tr.bottom = r.bottom + SZ(13);
         text(dc, h, tr, f_tiny, C_MUTED, DT_CENTER | DT_TOP | DT_SINGLELINE);
     }
-
-    /* 当前点标记 */
-    fill_circle(dc, pts[0].x, pts[0].y, SZ(4), C_TEXT);
-    fill_circle(dc, pts[0].x, pts[0].y, SZ(2), C_ACCENT);
 }
 
 static void draw_daily(HDC dc, RECT card)
@@ -903,10 +1023,10 @@ void ui_paint(HDC target, int cw, int ch)
     }
     y += SZ(54) + SZ(12);
 
-    /* ---- 次要数据：气压 / 能见度 / 云量 / 降水量 ---- */
+    /* ---- 次要数据：气压 / 能见度 / 云量 ---- */
     int g2  = SZ(10);
-    int pw2 = (w - g2 * 3) / 4;
-    for (int i = 0; i < 4; i++) {
+    int pw2 = (w - g2 * 2) / 3;
+    for (int i = 0; i < 3; i++) {
         RECT p;
         p.left  = x + i * (pw2 + g2);
         p.right = p.left + pw2;
@@ -928,36 +1048,46 @@ void ui_paint(HDC target, int cw, int ch)
             wcscpy(lbl, L"云量");
             swprintf(val, 24, L"%.0f%%", wd->cloud);
             break;
-        default:
-            wcscpy(lbl, L"降水量");
-            swprintf(val, 24, L"%.1f mm", wd->precip);
-            break;
         }
         draw_mini(dc, p, lbl, val);
     }
     y += SZ(42) + SZ(12);
 
     /* ---- 24 小时 ---- */
-    RECT hcard;
-    hcard.left = x; hcard.right = x + w;
-    hcard.top = y; hcard.bottom = y + SZ(100);
+    RECT hcard, ctabs[2];
+    chart_geom(cw, &hcard);
+    chart_tabs_geom(&hcard, ctabs);
+
     fill_rr(dc, hcard, SZ(14), C_CARD);
 
     RECT htitle;
-    htitle.left = hcard.left + SZ(12); htitle.right = hcard.right - SZ(12);
-    htitle.top = hcard.top + SZ(8); htitle.bottom = hcard.top + SZ(22);
+    htitle.left = hcard.left + SZ(12); htitle.right = ctabs[0].left - SZ(8);
+    htitle.top = hcard.top + SZ(7); htitle.bottom = hcard.top + SZ(23);
     text(dc, L"未来 24 小时", htitle, f_tiny, C_MUTED,
          DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    /* 图表标签：温度 / 降水量 */
+    for (int i = 0; i < 2; i++) {
+        int act = (g_app.chart_tab == i);
+        int hov = (g_app.hover_chart == i);
+
+        if (act)       fill_rr(dc, ctabs[i], SZ(9), C_CARD2);
+        else if (hov)  fill_rr(dc, ctabs[i], SZ(9), C_CARD);
+
+        text(dc, i == 0 ? L"温度" : L"降水量", ctabs[i], f_tiny,
+             (act || hov) ? C_TEXT : C_MUTED,
+             DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
 
     if (wd->hcount > 1) {
         RECT hplot;
         hplot.left = hcard.left + SZ(14);
         hplot.right = hcard.right - SZ(14);
-        hplot.top = hcard.top + SZ(26);
+        hplot.top = hcard.top + SZ(30);
         hplot.bottom = hcard.bottom - SZ(18);
-        draw_hourly(dc, hplot);
+        draw_hourly(dc, hplot, g_app.chart_tab);
     }
-    y += SZ(100) + SZ(12);
+    y = hcard.bottom + SZ(12);
 
     /* ---- 7 天 ---- */
     if (wd->dcount > 0) {
