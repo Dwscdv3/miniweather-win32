@@ -473,16 +473,19 @@ static void draw_icon(HDC dc, IBox b, int code, int isday, COLORREF bg)
 
 /* ---------------- 组件 ---------------- */
 
-/* 温度色阶：低温偏蓝、高温偏橙红（类似气象图里的渐变） */
+/* 温度色阶：冷 → 蓝，暖 → 黄，热 → 红（不含绿）。
+ * 蓝到黄若直接线性插值，中段会落到灰绿（RGB 分量几乎相等偏绿），
+ * 所以 10℃ 处放一个淡蓝紫、20℃ 处放暖沙色作过渡，绕开绿色区间。 */
 static COLORREF temp_color(double t)
 {
     static const struct { double t; int r, g, b; } S[] = {
-        { -10.0, 0x54, 0x8C, 0xFF },
-        {   0.0, 0x54, 0xC8, 0xFF },
-        {  10.0, 0x5F, 0xD3, 0x9B },
-        {  20.0, 0xF0, 0xCE, 0x6A },
-        {  30.0, 0xFF, 0x9E, 0x64 },
-        {  40.0, 0xFF, 0x6B, 0x6B }
+        { -20.0, 0x41, 0x6F, 0xD8 },
+        { -10.0, 0x4F, 0x87, 0xF2 },
+        {   0.0, 0x6E, 0xA9, 0xFF },
+        {  10.0, 0x9E, 0xB4, 0xF0 },
+        {  20.0, 0xFF, 0xD1, 0x66 },
+        {  30.0, 0xFF, 0xA0, 0x5C },
+        {  40.0, 0xFF, 0x62, 0x62 }
     };
     const int n = (int)(sizeof(S) / sizeof(S[0]));
 
@@ -499,6 +502,39 @@ static COLORREF temp_color(double t)
         }
     }
     return C_ACCENT;
+}
+
+/* 7 天温度条：横向渐变，颜色随条上每个位置对应的温度变化。
+ * 用圆角区域裁剪 + 竖向细条填充，圆角不会被画成方块。 */
+static void fill_temp_bar(HDC dc, RECT seg, double t_low, double t_high)
+{
+    int w = seg.right - seg.left;
+    int h = seg.bottom - seg.top;
+    if (w <= 0 || h <= 0) return;
+
+    int rad = SZ(3) * 2;
+    HRGN clip  = CreateRoundRectRgn(seg.left, seg.top, seg.right + 1, seg.bottom + 1, rad, rad);
+    int  saved = SaveDC(dc);
+    if (clip) SelectClipRgn(dc, clip);
+
+    int stepx = SZ(2);
+    if (stepx < 1) stepx = 1;
+
+    for (int x = seg.left; x < seg.right; x += stepx) {
+        RECT rc;
+        rc.left   = x;
+        rc.top    = seg.top;
+        rc.right  = (x + stepx > seg.right) ? seg.right : x + stepx;
+        rc.bottom = seg.bottom;
+
+        double k = (double)(x - seg.left) / (double)w;
+        HBRUSH br = CreateSolidBrush(temp_color(t_low + (t_high - t_low) * k));
+        FillRect(dc, &rc, br);
+        DeleteObject(br);
+    }
+
+    if (saved) RestoreDC(dc, saved);
+    if (clip) DeleteObject(clip);
 }
 
 static double nice_step(double raw)
@@ -548,10 +584,19 @@ static void draw_hourly(HDC dc, RECT r, int mode)
         }
         if (mx - mn < 3.0) { double c = (mx + mn) * 0.5; mn = c - 1.5; mx = c + 1.5; }
 
-        stepv = nice_step((mx - mn) / 2.0);
+        /* 步长按 3 段估算，再把上下限各自向外取整到刚好盖住 [mn, mx]。
+         * 旧写法固定 hi = lo + stepv*2，温差一大窗口只能整体上移，
+         * 最低点落到 lo 以下被钳成一条平线，看上去就是“截断”。 */
+        stepv = nice_step((mx - mn) / 3.0);
         lo = floor(mn / stepv) * stepv;
-        hi = lo + stepv * 2;
-        while (hi < mx) { lo += stepv; hi += stepv; }
+        hi = ceil(mx / stepv) * stepv;
+
+        /* 段数过多时换更大的步长，保证标签不挤在一起 */
+        while ((hi - lo) / stepv > 4.0) {
+            stepv = nice_step(stepv * 1.5);
+            lo = floor(mn / stepv) * stepv;
+            hi = ceil(mx / stepv) * stepv;
+        }
     } else {
         double mx = 0;
         for (int i = 0; i < n; i++) if (w->hprecip[i] > mx) mx = w->hprecip[i];
@@ -590,7 +635,11 @@ static void draw_hourly(HDC dc, RECT r, int mode)
     }
 
     /* 横向网格线 + Y 轴标签（画在填充之上） */
-    for (int i = 0; i < 3; i++) {
+    int nlines = (int)lround((hi - lo) / stepv) + 1;
+    if (nlines < 2) nlines = 2;
+    if (nlines > 6) nlines = 6;
+
+    for (int i = 0; i < nlines; i++) {
         double v = hi - stepv * i;
         int gy = bot - (int)lround((v - lo) / (hi - lo) * (bot - top));
 
@@ -743,7 +792,7 @@ static void draw_daily(HDC dc, RECT card)
         RECT seg;
         seg.left = x1; seg.right = x2;
         seg.top = ty - SZ(3); seg.bottom = ty + SZ(3);
-        fill_rr(dc, seg, SZ(3), temp_color(d->tmax));
+        fill_temp_bar(dc, seg, d->tmin, d->tmax);
 
         swprintf(s, 16, L"%.0f°", d->tmax);
         RECT rt2;
